@@ -618,7 +618,7 @@ async function showSubscription(T,cid,mid,kv,uid) {
     `   • شارة توثيق ✅\n   • أولوية في البحث\n   • متجر احترافي\n   • إحصائيات كاملة\n\n` +
     `للترقية تواصل مع الإدارة:`;
   const rows=[
-    [burl('💬 تواصل للترقية','https://t.me/me')],
+    [burl('💬 تواصل للترقية','https://t.me/Anas_Hc')],
     [back('account')],
   ];
   return mid?edit(T,cid,mid,txt,{reply_markup:ik(rows)}):send(T,cid,txt,{reply_markup:ik(rows)});
