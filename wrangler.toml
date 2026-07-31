@@ -1,0 +1,10 @@
+name = "soqna-bot"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "DB"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+[vars]
+# لا تضع التوكن هنا — استخدم wrangler secret put BOT_TOKEN
