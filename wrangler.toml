@@ -1,6 +1,9 @@
-name = "Kaza"
+name = "kaza"
 main = "worker.js"
 compatibility_date = "2024-01-01"
+
+[vars]
+BOT_TOKEN = "8656873565:AAEQZw4-hbfvDPTTSNkadeuijDRx47__AJQ"
 
 [[kv_namespaces]]
 binding = "DB"
