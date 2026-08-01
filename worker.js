@@ -1,4 +1,4 @@
-/ ================================================
+// ================================================
 // 🇵🇸 سوق فلسطين - بوت تيليجرام على Cloudflare Workers
 // ================================================
 
@@ -347,6 +347,16 @@ async function handleCallbackQuery(cq, env) {
     const storeId = data.replace('store_save_', '');
     return handleSaveStore(chatId, msgId, storeId, userId, env);
   }
+  if (data.startsWith('store_edit_name_')) {
+    const storeId = data.replace('store_edit_name_', '');
+    await setState(env, userId, { step: 'store_edit_name', data: { storeId } });
+    return editMessage(chatId, msgId, `✏️ <b>تعديل اسم المتجر</b>\n\nاكتب الاسم الجديد:`, { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: `store_edit_${storeId}` }]] } });
+  }
+  if (data.startsWith('store_edit_desc_')) {
+    const storeId = data.replace('store_edit_desc_', '');
+    await setState(env, userId, { step: 'store_edit_desc', data: { storeId } });
+    return editMessage(chatId, msgId, `✏️ <b>تعديل وصف المتجر</b>\n\nاكتب الوصف الجديد:`, { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: `store_edit_${storeId}` }]] } });
+  }
   if (data.startsWith('store_edit_')) {
     const storeId = data.replace('store_edit_', '');
     return startEditStore(chatId, msgId, storeId, userId, env);
@@ -368,6 +378,7 @@ async function handleCallbackQuery(cq, env) {
       state.data.category = cat;
       state.step = null;
       const storeId = await genId(env, 'store');
+      const isRestaurant = state.data.isRestaurant || false;
       const store = {
         id: storeId,
         ownerId: userId,
@@ -389,11 +400,11 @@ async function handleCallbackQuery(cq, env) {
       await saveUser(env, user);
       await clearState(env, userId);
       return sendMessage(chatId,
-        `✅ <b>تم إنشاء متجرك بنجاح!</b>\n\n` +
+        `✅ <b>تم إنشاء ${isRestaurant ? 'مطعمك' : 'متجرك'} بنجاح!</b>\n\n` +
         `🏪 <b>الاسم:</b> ${store.name}\n` +
         `📝 <b>الوصف:</b> ${store.description}\n` +
         `🗂️ <b>التصنيف:</b> ${cat}\n\n` +
-        `يمكنك إدارة متجرك من قسم <b>حسابي ← متجري</b> 🎉`,
+        `يمكنك الإدارة من قسم <b>حسابي ← متجري</b> 🎉`,
         { reply_markup: { inline_keyboard: backToMainBtn() } }
       );
     }
@@ -524,6 +535,7 @@ async function handleCallbackQuery(cq, env) {
 
   // ===== الخدمات =====
   if (data === 'menu_services') return showServicesMenu(chatId, msgId, env);
+  if (data === 'service_add_cat') return startAddServiceCategory(chatId, msgId, userId, env);
   if (data.startsWith('service_cat_page_')) {
     const parts = data.replace('service_cat_page_', '').split('|');
     const cat = parts[0];
@@ -540,7 +552,12 @@ async function handleCallbackQuery(cq, env) {
   }
 
   // ===== المطاعم =====
-  if (data === 'menu_restaurants') return showRestaurantsMenu(chatId, msgId, env);
+  if (data === 'menu_restaurants') return showRestaurantsMenu(chatId, msgId, env, userId);
+  if (data === 'restaurant_create_new') return startCreateStore(chatId, msgId, userId, env, true);
+  if (data.startsWith('restaurant_add_store_')) {
+    const storeId = data.replace('restaurant_add_store_', '');
+    return startAddProduct(chatId, msgId, userId, storeId, 'restaurant', env);
+  }
 
   // ===== المميزة ==
   if (data === 'menu_featured') return showFeaturedProducts(chatId, msgId, env);
@@ -549,6 +566,17 @@ async function handleCallbackQuery(cq, env) {
   if (data === 'menu_offers') return showOffers(chatId, msgId, env);
 
   // ===== إضافة إعلان =====
+  if (data === 'ad_publish_confirm') {
+    const state = await getState(env, userId);
+    if (state.step === 'add_ad_confirm') {
+      const user = await getUser(env, userId);
+      user.ads = user.ads || [];
+      user.ads.push({ text: state.data.adText, createdAt: Date.now() });
+      await saveUser(env, user);
+      await clearState(env, userId);
+      return editMessage(chatId, msgId, `✅ تم نشر إعلانك بنجاح!`, { reply_markup: { inline_keyboard: backToMainBtn() } });
+    }
+  }
   if (data === 'menu_addad') return startAddAd(chatId, msgId, userId, env);
 
   // ===== حسابي =====
@@ -580,6 +608,7 @@ async function handleCallbackQuery(cq, env) {
   if (data === 'admin_add_admin') return startAddAdmin(chatId, msgId, userId, env);
   if (data === 'admin_subscriptions') return showAdminSubscriptions(chatId, msgId, env);
   if (data === 'admin_add_subscriber') return startAddSubscriber(chatId, msgId, userId, env);
+  if (data === 'admin_set_sub_stores') return startSetSubStores(chatId, msgId, userId, env);
   if (data === 'admin_featured') return showAdminFeatured(chatId, msgId, env);
   if (data === 'admin_add_featured') return startAddFeatured(chatId, msgId, userId, env);
   if (data === 'admin_offers_manage') return showAdminOffers(chatId, msgId, env);
@@ -631,6 +660,12 @@ async function handleConversationStep(msg, state, env) {
     case 'store_description':
       if (!text || text.length < 5) return sendMessage(chatId, '❌ الوصف قصير جداً، اكتب وصفاً أوضح:');
       state.data.description = text;
+      // إذا كان المتجر مطعم، نعرض فقط تصانيف المطاعم والكافيهات
+      if (state.data.isRestaurant) {
+        state.step = 'store_category';
+        await setState(env, userId, state);
+        return showStoreCategorySelection(chatId, env, true);
+      }
       state.step = 'store_category';
       await setState(env, userId, state);
       return showStoreCategorySelection(chatId, env);
@@ -730,11 +765,27 @@ async function handleConversationStep(msg, state, env) {
     case 'admin_add_subscriber_id': {
       const subId = parseInt(text);
       if (isNaN(subId)) return sendMessage(chatId, '❌ أدخل ID صحيح:');
-      const user = await getUser(env, subId);
-      user.premium = true;
-      await saveUser(env, user);
+      const subUser = await getUser(env, subId);
+      subUser.premium = true;
+      subUser.maxStores = 999;
+      await saveUser(env, subUser);
       await clearState(env, userId);
-      return sendMessage(chatId, `✅ تم ترقية المستخدم <code>${subId}</code> إلى الخطة المميزة!`, { reply_markup: { inline_keyboard: [[{ text: '🔙 لوحة التحكم', callback_data: 'admin_panel' }]] } });
+      return sendMessage(chatId, `✅ تم ترقية المستخدم <code>${subId}</code> إلى الخطة المميزة!\n🏪 عدد المتاجر: غير محدود`, { reply_markup: { inline_keyboard: [[{ text: '🔙 لوحة التحكم', callback_data: 'admin_panel' }]] } });
+    }
+
+    // ===== تحديد عدد المتاجر لمستخدم =====
+    case 'admin_set_sub_stores_id': {
+      const parts = text.trim().split(/\s+/);
+      if (parts.length < 2) return sendMessage(chatId, '❌ أرسل ID المستخدم ثم العدد مفصولين بمسافة.\nمثال: <code>123456789 5</code>');
+      const targetId = parseInt(parts[0]);
+      const storeCount = parseInt(parts[1]);
+      if (isNaN(targetId) || isNaN(storeCount) || storeCount < 1) return sendMessage(chatId, '❌ تأكد من صحة ID والعدد (يجب أن يكون العدد ≥ 1):');
+      const targetUser = await getUser(env, targetId);
+      targetUser.premium = storeCount > 2;
+      targetUser.maxStores = storeCount;
+      await saveUser(env, targetUser);
+      await clearState(env, userId);
+      return sendMessage(chatId, `✅ تم تحديث المستخدم <code>${targetId}</code>\n🏪 الحد المسموح: <b>${storeCount} متاجر</b>`, { reply_markup: { inline_keyboard: [[{ text: '🔙 لوحة التحكم', callback_data: 'admin_panel' }]] } });
     }
 
     // ===== إضافة منتج مميز =====
@@ -774,6 +825,21 @@ async function handleConversationStep(msg, state, env) {
       await addMarketCategory(env, text);
       await clearState(env, userId);
       return sendMessage(chatId, `✅ تمت إضافة التصنيف <b>${text}</b> للسوق!`, { reply_markup: { inline_keyboard: backToMainBtn() } });
+    }
+
+    // ===== إضافة تصنيف خدمة =====
+    case 'service_add_category': {
+      if (!text || text.length < 2) return sendMessage(chatId, '❌ اسم التصنيف قصير جداً، حاول مرة أخرى:');
+      const existingService = await findMatchingCategory(env, 'service', text);
+      if (existingService) {
+        await clearState(env, userId);
+        return sendMessage(chatId, `⚠️ هذا التصنيف موجود بالفعل: <b>${existingService}</b>`, { reply_markup: { inline_keyboard: [[{ text: '🔧 قائمة الخدمات', callback_data: 'menu_services' }], ...backToMainBtn()] } });
+      }
+      const customServiceCats = await kvGet(env, 'service_categories_custom') || [];
+      customServiceCats.push(text);
+      await kvSet(env, 'service_categories_custom', customServiceCats);
+      await clearState(env, userId);
+      return sendMessage(chatId, `✅ تمت إضافة التصنيف <b>${text}</b> للخدمات!\n\nسيظهر في قائمة الخدمات والتصانيف المتاحة.`, { reply_markup: { inline_keyboard: [[{ text: '🔧 قائمة الخدمات', callback_data: 'menu_services' }], ...backToMainBtn()] } });
     }
 
     // ===== تعديل اسم المتجر =====
@@ -892,13 +958,13 @@ async function showStoreDetail(chatId, msgId, storeId, userId, env) {
   return editMessage(chatId, msgId, text, { reply_markup: { inline_keyboard: buttons } });
 }
 
-async function startCreateStore(chatId, msgId, userId, env) {
+async function startCreateStore(chatId, msgId, userId, env, isRestaurant = false) {
   const user = await getUser(env, userId);
   const userStores = user.stores || [];
-  const maxStores = user.premium ? 999 : 2;
+  const maxStores = user.maxStores || (user.premium ? 999 : 2);
   if (userStores.length >= maxStores) {
     return editMessage(chatId, msgId,
-      `⚠️ <b>لقد وصلت للحد الأقصى من المتاجر!</b>\n\nالخطة المجانية تسمح بـ 2 متاجر فقط.\n\nللحصول على مزيد من المتاجر، اشترك في الخطة المميزة ✨`,
+      `⚠️ <b>لقد وصلت للحد الأقصى من المتاجر!</b>\n\nخطتك الحالية تسمح بـ ${maxStores} متاجر فقط.\n\nللحصول على مزيد من المتاجر، اشترك في الخطة المميزة ✨`,
       {
         reply_markup: {
           inline_keyboard: [
@@ -909,20 +975,25 @@ async function startCreateStore(chatId, msgId, userId, env) {
       }
     );
   }
-  await setState(env, userId, { step: 'store_name', data: {} });
+  await setState(env, userId, { step: 'store_name', data: { isRestaurant } });
   return editMessage(chatId, msgId,
-    `🏪 <b>إنشاء متجر</b>\n\n` +
-    `مرحباً! دعنا ننشئ متجرك خطوة بخطوة.\n\n` +
-    `<b>الخطوة 1 — اكتب اسم المتجر:</b>`
+    `🏪 <b>إنشاء ${isRestaurant ? 'مطعم' : 'متجر'}</b>\n\n` +
+    `مرحباً! دعنا ننشئ ${isRestaurant ? 'مطعمك' : 'متجرك'} خطوة بخطوة.\n\n` +
+    `<b>الخطوة 1 — اكتب اسم ${isRestaurant ? 'المطعم' : 'المتجر'}:</b>`
   );
 }
 
-async function showStoreCategorySelection(chatId, env) {
-  const cats = await getStoreCategories(env);
+async function showStoreCategorySelection(chatId, env, restaurantOnly = false) {
+  let cats = await getStoreCategories(env);
+  if (restaurantOnly) {
+    cats = cats.filter(c => c.includes('مطعم') || c.includes('كافيه') || c.includes('مخبز') || c.includes('حلويات'));
+  }
   const buttons = cats.map(cat => [{ text: cat, callback_data: `storecat_select_${cat}` }]);
-  buttons.push([{ text: '🔤 أخرى (حدد بنفسك)', callback_data: 'storecat_select_🏷️ أخرى' }]);
+  if (!restaurantOnly) {
+    buttons.push([{ text: '🔤 أخرى (حدد بنفسك)', callback_data: 'storecat_select_🏷️ أخرى' }]);
+  }
   return sendMessage(chatId,
-    `🗂️ <b>اختر تصنيف المتجر:</b>`,
+    `🗂️ <b>اختر تصنيف ${restaurantOnly ? 'المطعم' : 'المتجر'}:</b>`,
     { reply_markup: { inline_keyboard: buttons } }
   );
 }
@@ -1399,7 +1470,6 @@ const SERVICE_CATS_FLAT = SERVICE_CATS.flat();
 
 async function showServicesMenu(chatId, msgId, env) {
   const customServiceCats = await kvGet(env, 'service_categories_custom') || [];
-  const allServiceCats = [...SERVICE_CATS_FLAT, ...customServiceCats];
 
   // الثمانية الأساسية صفين متوازيين
   const buttons = SERVICE_CATS.map(pair =>
@@ -1409,6 +1479,7 @@ async function showServicesMenu(chatId, msgId, env) {
   for (const cat of customServiceCats) {
     buttons.push([{ text: cat, callback_data: `service_cat_${cat}` }]);
   }
+  buttons.push([{ text: '➕ إضافة تصنيف', callback_data: 'service_add_cat' }]);
   buttons.push([{ text: '↩️ رجوع', callback_data: 'main_menu' }]);
 
   return editMessage(chatId, msgId,
@@ -1453,7 +1524,7 @@ async function showServicesByCategory(chatId, msgId, cat, env, page) {
 }
 
 // ==================== المطاعم ====================
-async function showRestaurantsMenu(chatId, msgId, env) {
+async function showRestaurantsMenu(chatId, msgId, env, userId) {
   const allStoreIds = await getAllStores(env);
   const restaurants = [];
   for (const storeId of allStoreIds) {
@@ -1462,13 +1533,37 @@ async function showRestaurantsMenu(chatId, msgId, env) {
       restaurants.push(store);
     }
   }
+
+  // أزرار لإضافة مطعم — مع خيار الإضافة لمتجر موجود
+  const addButtons = [];
+  if (userId) {
+    const user = await getUser(env, userId);
+    const userStores = user.stores || [];
+    const userStoreObjs = [];
+    for (const sid of userStores) {
+      const s = await getStore(env, sid);
+      if (s) userStoreObjs.push(s);
+    }
+    if (userStoreObjs.length > 0) {
+      addButtons.push([{ text: '🏗️ إنشاء مطعم جديد', callback_data: 'restaurant_create_new' }]);
+      for (let i = 0; i < userStoreObjs.length; i++) {
+        addButtons.push([{ text: `➕ إضافة لـ: ${userStoreObjs[i].name}`, callback_data: `restaurant_add_store_${userStoreObjs[i].id}` }]);
+      }
+    } else {
+      addButtons.push([{ text: '➕ أضف مطعمك', callback_data: 'restaurant_create_new' }]);
+    }
+  } else {
+    addButtons.push([{ text: '➕ أضف مطعمك', callback_data: 'restaurant_create_new' }]);
+  }
+
   if (restaurants.length === 0) {
     return editMessage(chatId, msgId,
       `🍽️ <b>المطاعم</b>\n\n😔 لا توجد مطاعم مسجلة بعد.`,
-      { reply_markup: { inline_keyboard: [[{ text: '➕ أضف مطعمك', callback_data: 'stores_create' }], ...backToMainBtn()] } }
+      { reply_markup: { inline_keyboard: [...addButtons, ...backToMainBtn()] } }
     );
   }
   const buttons = restaurants.map(r => [{ text: `🍽️ ${r.name}`, callback_data: `store_view_${r.id}` }]);
+  buttons.push(...addButtons);
   buttons.push([{ text: '🏠 القائمة الرئيسية', callback_data: 'main_menu' }]);
   return editMessage(chatId, msgId, `🍽️ <b>المطاعم والمقاهي</b> (${restaurants.length}):`, { reply_markup: { inline_keyboard: buttons } });
 }
@@ -1631,9 +1726,10 @@ async function showSubscription(chatId, msgId, userId, env) {
 async function showMyStores(chatId, msgId, userId, env) {
   const user = await getUser(env, userId);
   const storeIds = user.stores || [];
+  const maxStores = user.maxStores || (user.premium ? 999 : 2);
   if (storeIds.length === 0) {
     return editMessage(chatId, msgId,
-      `🏪 <b>متجري</b>\n\n😔 لم تنشئ أي متجر بعد.`,
+      `🏪 <b>متجري</b>\n\n😔 لم تنشئ أي متجر بعد.\n\n📊 الخطة الحالية: ${user.premium ? '✨ مميزة' : '🆓 مجانية'} — حتى ${maxStores === 999 ? 'غير محدود' : maxStores} متاجر`,
       {
         reply_markup: {
           inline_keyboard: [
@@ -1645,12 +1741,15 @@ async function showMyStores(chatId, msgId, userId, env) {
     );
   }
   const buttons = [];
-  for (const storeId of storeIds) {
-    const store = await getStore(env, storeId);
-    if (store) buttons.push([{ text: `🏪 ${store.name}`, callback_data: `mystore_manage_${store.id}` }]);
+  for (let i = 0; i < storeIds.length; i++) {
+    const store = await getStore(env, storeIds[i]);
+    if (store) buttons.push([{ text: `🏪 متجر ${i + 1} — ${store.name}`, callback_data: `mystore_manage_${store.id}` }]);
+  }
+  if (storeIds.length < maxStores) {
+    buttons.push([{ text: '➕ إضافة متجر جديد', callback_data: 'stores_create' }]);
   }
   buttons.push([{ text: '🔙 رجوع', callback_data: 'menu_account' }]);
-  return editMessage(chatId, msgId, `🏪 <b>متاجري</b> (${storeIds.length} متجر):`, { reply_markup: { inline_keyboard: buttons } });
+  return editMessage(chatId, msgId, `🏪 <b>متاجري</b> (${storeIds.length}/${maxStores === 999 ? '∞' : maxStores} متاجر):`, { reply_markup: { inline_keyboard: buttons } });
 }
 
 async function showMyStoreManage(chatId, msgId, storeId, userId, env) {
@@ -1779,11 +1878,12 @@ async function startAddAdmin(chatId, msgId, userId, env) {
 
 async function showAdminSubscriptions(chatId, msgId, env) {
   return editMessage(chatId, msgId,
-    `⭐ <b>إدارة الاشتراكات</b>\n\nأضف مشتركاً جديداً بإدخال ID المستخدم:`,
+    `⭐ <b>إدارة الاشتراكات</b>\n\nأضف مشتركاً جديداً أو حدد عدد المتاجر المسموح لمستخدم:`,
     {
       reply_markup: {
         inline_keyboard: [
-          [{ text: '➕ إضافة مشترك', callback_data: 'admin_add_subscriber' }],
+          [{ text: '➕ إضافة مشترك مميز', callback_data: 'admin_add_subscriber' }],
+          [{ text: '🏪 تحديد عدد المتاجر لمستخدم', callback_data: 'admin_set_sub_stores' }],
           [{ text: '✏️ تغيير نص الاشتراك', callback_data: 'admin_change_sub_text' }],
           [{ text: '🔙 رجوع', callback_data: 'admin_panel' }]
         ]
@@ -1795,8 +1895,24 @@ async function showAdminSubscriptions(chatId, msgId, env) {
 async function startAddSubscriber(chatId, msgId, userId, env) {
   await setState(env, userId, { step: 'admin_add_subscriber_id', data: {} });
   return editMessage(chatId, msgId,
-    `⭐ <b>إضافة مشترك مميز</b>\n\nأرسل ID المستخدم:`,
-    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'admin_panel' }]] } }
+    `⭐ <b>إضافة مشترك مميز</b>\n\nأرسل ID المستخدم (سيتم منحه اشتراكاً مميزاً بعدد متاجر غير محدود):`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'admin_subscriptions' }]] } }
+  );
+}
+
+async function startSetSubStores(chatId, msgId, userId, env) {
+  await setState(env, userId, { step: 'admin_set_sub_stores_id', data: {} });
+  return editMessage(chatId, msgId,
+    `🏪 <b>تحديد عدد المتاجر لمستخدم</b>\n\nأرسل ID المستخدم متبوعاً بمسافة ثم العدد المطلوب.\n\nمثال: <code>123456789 5</code>`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'admin_subscriptions' }]] } }
+  );
+}
+
+async function startAddServiceCategory(chatId, msgId, userId, env) {
+  await setState(env, userId, { step: 'service_add_category', data: {} });
+  return editMessage(chatId, msgId,
+    `➕ <b>إضافة تصنيف خدمة جديد</b>\n\nاكتب اسم التصنيف الجديد (مثال: 🌱 زراعة وحدائق):`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'menu_services' }]] } }
   );
 }
 
