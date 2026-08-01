@@ -1,1682 +1,1791 @@
-// ═══════════════════════════════════════════════════════
-//   سوقنا — سوق فلسطين في تيليجرام 🇵🇸
-//   النسخة الجديدة — حسب المواصفة الكاملة
-// ═══════════════════════════════════════════════════════
+// ================================================
+// 🇵🇸 سوق فلسطين - بوت تيليجرام على Cloudflare Workers
+// ================================================
 
-const BOT_TOKEN = process.env.BOT_TOKEN;
-if (!BOT_TOKEN) { console.error('❌ BOT_TOKEN مفقود!'); process.exit(1); }
-
-// ── المالك الوحيد ──────────────────────────────────────
+const BOT_TOKEN = '8656873565:AAEQZw4-hbfvDPTTSNkadeuijDRx47__AJQ';
 const OWNER_ID = 6668195885;
-const UPGRADE_USERNAME = 'Anas_Hc';
+const API_BASE = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
-// ── التصنيفات الثابتة للمتاجر ─────────────────────────
-const FIXED_STORE_CATS = [
-  { id: 'restaurant', name: '🍔 مطعم وكافيه' },
-  { id: 'retail',     name: '🛍️ بيع بالتجزئة' },
-  { id: 'pharmacy',   name: '💊 صيدلية' },
-  { id: 'wholesale',  name: '📦 بيع بالجملة' },
-  { id: 'supermarket',name: '🏪 سوبرماركت' },
-  { id: 'bakery',     name: '🍞 مخبز وحلويات' },
-  { id: 'workshop',   name: '🔧 ورشة وصيانة' },
-];
-
-// ── التصنيفات الثابتة للمنتجات ────────────────────────
-const FIXED_PROD_CATS = [
-  { id: 'clothes',     name: '👕 ملابس' },
-  { id: 'electronics', name: '📱 إلكترونيات' },
-  { id: 'food',        name: '🍱 أغذية ومؤن' },
-  { id: 'home',        name: '🏠 المنزل والأثاث' },
-  { id: 'kids',        name: '👶 أطفال وألعاب' },
-  { id: 'beauty',      name: '💄 تجميل وعناية' },
-  { id: 'books',       name: '📚 كتب وقرطاسية' },
-  { id: 'sports',      name: '⚽ رياضة' },
-  { id: 'tools',       name: '🔧 أدوات ومعدات' },
-];
-
-// ── الخدمات ─────────────────────────────────────────────
-const SERVICE_TYPES = [
-  { id: 'programming', name: '💻 برمجة وتقنية' },
-  { id: 'design',      name: '🎨 تصميم وإبداع' },
-  { id: 'maintenance', name: '🔧 صيانة وإصلاح' },
-  { id: 'cleaning',    name: '🧹 نظافة ومنزل' },
-  { id: 'education',   name: '📚 تعليم ودروس' },
-  { id: 'photography', name: '📷 تصوير وفيديو' },
-  { id: 'transport',   name: '🚚 نقل وتوصيل' },
-  { id: 'sewing',      name: '🧵 خياطة وتفصيل' },
-  { id: 'other_svc',   name: '📋 أخرى' },
-];
-
-// ── المدن الثابتة ─────────────────────────────────────
-const FIXED_CITIES = [
-  'غزة','خانيونس','رفح','جباليا','دير البلح',
-  'النصيرات','بيت حانون','بيت لاهيا','المغازي','البريج',
-  'رام الله','نابلس','الخليل','بيت لحم','جنين',
-  'طولكرم','أريحا','القدس','قلقيلية','سلفيت',
-  'يافا','حيفا','الناصرة',
-];
-
-// ── خطط الاشتراك ──────────────────────────────────────
-const PLANS = {
-  free:     { name: '🟢 مجاني',  badge: '',   stores: 2, products: 10, price: 0  },
-  pro:      { name: '🔵 برو',    badge: '⭐', stores: 5, products: 50, price: 4  },
-  business: { name: '🟣 أعمال', badge: '✅', stores: 9, products: 999,price: 10 },
+// ==================== معالج الطلبات الرئيسي ====================
+export default {
+  async fetch(request, env) {
+    if (request.method !== 'POST') {
+      return new Response('🇵🇸 سوق فلسطين يعمل!', { status: 200 });
+    }
+    try {
+      const update = await request.json();
+      await handleUpdate(update, env);
+    } catch (e) {
+      console.error('خطأ:', e);
+    }
+    return new Response('OK', { status: 200 });
+  }
 };
 
-// ═══════════════════════════════════════════════════════
-// ذاكرة مؤقتة
-// ═══════════════════════════════════════════════════════
-class MemKV {
-  constructor() { this._s = new Map(); }
-  async get(k)    { const v=this._s.get(k); return v===undefined?null:JSON.parse(v); }
-  async put(k,v)  { this._s.set(k,JSON.stringify(v)); }
-  async delete(k) { this._s.delete(k); }
+// ==================== KV Helper ====================
+async function kvGet(env, key) {
+  const val = await env.DB.get(key, 'json');
+  return val;
 }
-const kv = new MemKV();
-
-// ═══════════════════════════════════════════════════════
-// Telegram API
-// ═══════════════════════════════════════════════════════
-async function tg(method,body={}) {
-  try {
-    const r=await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`,{
-      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)
-    });
-    return r.json();
-  } catch(e){ console.error(`tg(${method}):`,e.message); return {ok:false}; }
+async function kvSet(env, key, value) {
+  await env.DB.put(key, JSON.stringify(value));
 }
-const send   = (cid,txt,ex={}) => tg('sendMessage',{chat_id:cid,text:txt,parse_mode:'HTML',...ex});
-const edit   = (cid,mid,txt,ex={}) => tg('editMessageText',{chat_id:cid,message_id:mid,text:txt,parse_mode:'HTML',...ex});
-const answer = (id,txt='',al=false) => tg('answerCallbackQuery',{callback_query_id:id,text:txt,show_alert:al});
-const photo  = (cid,p,cap,ex={}) => tg('sendPhoto',{chat_id:cid,photo:p,caption:cap,parse_mode:'HTML',...ex});
-const notify = (uid,txt) => send(uid,txt);
-
-// ═══════════════════════════════════════════════════════
-// Keyboard Helpers
-// ═══════════════════════════════════════════════════════
-const ik   = rows => ({inline_keyboard:rows});
-const b    = (t,d) => ({text:t,callback_data:String(d).slice(0,64)});
-const burl = (t,u) => ({text:t,url:u});
-const back = (to='main') => b('🔙 رجوع',to);
-
-// ═══════════════════════════════════════════════════════
-// KV Helpers
-// ═══════════════════════════════════════════════════════
-const kget  = k    => kv.get(k);
-const kset  = (k,v)=> kv.put(k,v);
-const kdel  = k    => kv.delete(k);
-const genId = ()   => Date.now().toString(36)+Math.random().toString(36).slice(2,5);
-
-async function getUser(uid) {
-  return await kget(`u:${uid}`) || {
-    id:uid,role:'customer',adminRole:null,subscription:'free',
-    savedProducts:[],savedStores:[],history:[],createdAt:Date.now()
-  };
+async function kvDel(env, key) {
+  await env.DB.delete(key);
 }
-const saveUser = (uid,d) => kset(`u:${uid}`,d);
-
-async function getState(uid) { return await kget(`st:${uid}`) || {}; }
-const setState   = (uid,s) => kset(`st:${uid}`,s);
-const clearState = uid     => kdel(`st:${uid}`);
-
-const getProd   = id => kget(`p:${id}`);
-const saveProd  = (id,d) => kset(`p:${id}`,d);
-const getStore  = id => kget(`s:${id}`);
-const saveStore = (id,d) => kset(`s:${id}`,d);
-const getOrder  = id => kget(`o:${id}`);
-const saveOrder = (id,d) => kset(`o:${id}`,d);
-
-async function listAdd(key,id,max=500) {
-  const l=await kget(key)||[];
-  if(!l.includes(id)){l.push(id);await kset(key,l.slice(-max));}
+async function kvGetText(env, key) {
+  return await env.DB.get(key, 'text');
 }
-async function listRm(key,id) {
-  const l=await kget(key)||[];
-  await kset(key,l.filter(x=>x!==id));
-}
-const getList = key => kget(key).then(v=>v||[]);
-
-// ── صلاحيات ──────────────────────────────────────────
-const isOwner = u => Number(u.id)===OWNER_ID;
-const isAdmin = u => isOwner(u)||['admin','moderator'].includes(u.adminRole);
-const isMod   = u => isOwner(u)||['admin','moderator'].includes(u.adminRole);
-
-// ═══════════════════════════════════════════════════════
-// تطبيع النص العربي للمطابقة الذكية
-// ═══════════════════════════════════════════════════════
-function normalizeAr(text) {
-  return (text||'')
-    .replace(/[أإآ]/g,'ا')
-    .replace(/ة/g,'ه')
-    .replace(/ى/g,'ي')
-    .replace(/[\u064B-\u065F\u0670]/g,'') // إزالة التشكيل
-    .replace(/\s+/g,' ')
-    .trim();
+async function kvSetText(env, key, value) {
+  await env.DB.put(key, value);
 }
 
-// البحث الذكي عن تصنيف مشابه
-async function findSimilarCat(text,listKey) {
-  const norm=normalizeAr(text);
-  const cats=await getList(listKey);
-  return cats.find(c=>normalizeAr(c.name)===norm||normalizeAr(c.name).includes(norm)||norm.includes(normalizeAr(c.name)));
-}
-
-// البحث الذكي عن مدينة مشابهة
-async function findSimilarCity(text) {
-  const norm=normalizeAr(text);
-  const allFixed=FIXED_CITIES.find(c=>normalizeAr(c)===norm);
-  if(allFixed) return allFixed;
-  const custom=await getList('cities:custom');
-  return custom.find(c=>normalizeAr(c)===norm);
-}
-
-// ═══════════════════════════════════════════════════════
-// نص الرئيسية
-// ═══════════════════════════════════════════════════════
-function mainText(u) {
-  const plan=PLANS[u.subscription||'free'];
-  return `🏠 <b>سوقنا</b> — سوق فلسطين في تيليجرام 🇵🇸\n\nاشتراكك: ${plan.name} ${plan.badge}`;
-}
-
-function mainKb(u) {
-  const rows=[
-    [b('🏪 المتاجر','stores'),       b('🛍️ السوق','market')],
-    [b('🛠️ الخدمات','services'),    b('🍔 المطاعم','restaurants')],
-    [b('⭐ المنتجات المميزة','featured'), b('🔥 العروض','offers')],
-    [b('➕ أضف إعلان','add'),        b('👤 حسابي','account')],
-    [b('🔍 بحث','search'),           b('📋 التصنيفات المتاحة','all_cats')],
-  ];
-  if(isAdmin(u)) rows.push([b('⚙️ لوحة الإدارة','admin')]);
-  return ik(rows);
-}
-
-async function showMain(cid,mid,u) {
-  const txt=mainText(u), kb=mainKb(u);
-  return mid?edit(cid,mid,txt,{reply_markup:kb}):send(cid,txt,{reply_markup:kb});
-}
-
-// ═══════════════════════════════════════════════════════
-// التصنيفات المتاحة
-// ═══════════════════════════════════════════════════════
-async function showAllCats(cid,mid) {
-  const customStore=await getList('store_cats:custom');
-  const customProd=await getList('prod_cats:custom');
-  let txt=`📋 <b>التصنيفات المتاحة</b>\n\n`;
-  txt+=`<b>🏪 تصنيفات المتاجر:</b>\n`;
-  FIXED_STORE_CATS.forEach(c=>{txt+=`• ${c.name}\n`;});
-  customStore.forEach(c=>{txt+=`• ${c.name} *(مضاف)*\n`;});
-  txt+=`\n<b>🛍️ تصنيفات المنتجات:</b>\n`;
-  FIXED_PROD_CATS.forEach(c=>{txt+=`• ${c.name}\n`;});
-  customProd.forEach(c=>{txt+=`• ${c.name} *(مضاف)*\n`;});
-  const kb=ik([[back()]]);
-  return mid?edit(cid,mid,txt,{reply_markup:kb}):send(cid,txt,{reply_markup:kb});
-}
-
-// ═══════════════════════════════════════════════════════
-// المتاجر
-// ═══════════════════════════════════════════════════════
-async function showStoresMenu(cid,mid) {
-  const txt=`🏪 <b>المتاجر</b>\n\nاختر:`;
-  const kb=ik([[b('🏪 المتاجر المتاحة','stores_list:0')],[b('➕ أنشئ متجرك','create_store')],[back()]]);
-  return mid?edit(cid,mid,txt,{reply_markup:kb}):send(cid,txt,{reply_markup:kb});
-}
-
-async function showStoresList(cid,mid,page=0) {
-  const PAGE=20;
-  const ids=await getList('stores:all');
-  if(!ids.length){
-    const txt=`🏪 لا توجد متاجر بعد. كن أول من يضيف!`;
-    return mid?edit(cid,mid,txt,{reply_markup:ik([[b('➕ أنشئ متجرك','create_store')],[back('stores')]])}):
-               send(cid,txt,{reply_markup:ik([[b('➕ أنشئ متجرك','create_store')],[back('stores')]])});
-  }
-  const pageIds=ids.slice(page*PAGE,(page+1)*PAGE);
-  const stores=(await Promise.all(pageIds.map(id=>getStore(id)))).filter(Boolean);
-  const total=ids.length;
-  let txt=`🏪 <b>المتاجر المتاحة</b> (${total})\nالصفحة ${page+1}/${Math.ceil(total/PAGE)}\n\n`;
-  const rows=stores.map(s=>{
-    const plan=PLANS[s.subscription||'free'];
-    return [b(`${plan.badge?plan.badge+' ':''}${s.name} | ${s.city}`,`store:${s.id}`)];
+// ==================== Telegram API ====================
+async function callAPI(method, params) {
+  const res = await fetch(`${API_BASE}/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params)
   });
-  const nav=[];
-  if(page>0) nav.push(b('◀️ السابق',`stores_list:${page-1}`));
-  if((page+1)*PAGE<total) nav.push(b('التالي ▶️',`stores_list:${page+1}`));
-  if(nav.length) rows.push(nav);
-  rows.push([back('stores')]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
+  return res.json();
 }
 
-async function showStore(cid,storeId,uid,cbId) {
-  const s=await getStore(storeId);
-  if(!s){if(cbId)await answer(cbId,'⚠️ المتجر غير موجود',true);return;}
-  const u=await getUser(uid);
-  const plan=PLANS[s.subscription||'free'];
-  const catName=getCatName(s.category,'store');
-  const txt=`🏪 <b>${plan.badge?plan.badge+' ':''}${s.name}</b>\n\n`+
-    `📋 ${catName}\n📍 ${s.city}\n`+
-    `${s.hours?`🕐 ${s.hours}\n`:''}`+
-    `📝 ${s.description||'—'}\n\n`+
-    `👁️ ${s.views||0} مشاهدة`;
-
-  // زيادة المشاهدات
-  s.views=(s.views||0)+1; await saveStore(storeId,s);
-
-  const isSaved=(u.savedStores||[]).includes(storeId);
-  const rows=[];
-  if(s.username) rows.push([burl('💬 تواصل مع المتجر',`https://t.me/${s.username}`)]);
-  rows.push([b('📦 عرض منتجات المتجر',`store_prods:${storeId}:0`)]);
-  rows.push([
-    b(isSaved?'💔 إزالة من المحفوظات':`❤️ حفظ المتجر`,isSaved?`unsave_store:${storeId}`:`save_store:${storeId}`),
-    b('🚩 تبليغ',`report_store_q:${storeId}`),
-  ]);
-  if(isAdmin(u)) rows.push([b('🗑️ حذف المتجر',`del_store_c:${storeId}`)]);
-  rows.push([back('stores_list:0')]);
-
-  if(s.cover){try{return await photo(cid,s.cover,txt,{reply_markup:ik(rows)});}catch{}}
-  return send(cid,txt,{reply_markup:ik(rows)});
+async function sendMessage(chatId, text, extra = {}) {
+  return callAPI('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', ...extra });
 }
 
-async function showStoreProducts(cid,mid,storeId,page=0) {
-  const PAGE=15;
-  const s=await getStore(storeId);
-  if(!s) return;
-  const allIds=s.products||[];
-  const approved=(await Promise.all(allIds.map(id=>getProd(id)))).filter(p=>p&&p.status==='approved');
-  if(!approved.length){
-    const noTxt=`📦 لا توجد منتجات في هذا المتجر.`;
-    const noKb=ik([[back(`store:${storeId}`)]]);
-    return mid?edit(cid,mid,noTxt,{reply_markup:noKb}):send(cid,noTxt,{reply_markup:noKb});
-  }
-  const pageProds=approved.slice(page*PAGE,(page+1)*PAGE);
-  let txt=`📦 <b>منتجات ${s.name}</b> (${approved.length})\n\n`;
-  const rows=pageProds.map(p=>[b(`${p.name.slice(0,28)} | ${p.price}₪`,`prod:${p.id}`)]);
-  const nav=[];
-  if(page>0) nav.push(b('◀️',`store_prods:${storeId}:${page-1}`));
-  if((page+1)*PAGE<approved.length) nav.push(b('▶️',`store_prods:${storeId}:${page+1}`));
-  if(nav.length) rows.push(nav);
-  rows.push([back(`store:${storeId}`)]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
+async function editMessage(chatId, messageId, text, extra = {}) {
+  return callAPI('editMessageText', { chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML', ...extra });
 }
 
-// ═══════════════════════════════════════════════════════
-// إنشاء متجر — Flow كامل
-// ═══════════════════════════════════════════════════════
-async function startCreateStore(cid,mid,uid) {
-  const u=await getUser(uid);
-  const plan=PLANS[u.subscription||'free'];
-  const myStores=await getList(`user:${uid}:stores`);
-  if(myStores.length>=plan.stores){
-    const txt=`⚠️ <b>وصلت للحد الأقصى!</b>\n\nخطتك تسمح بـ ${plan.stores} متاجر فقط.\nرقّ اشتراكك للمزيد!`;
-    const kb=ik([[b('⭐ الاشتراك','subscription')],[back('stores')]]);
-    return mid?edit(cid,mid,txt,{reply_markup:kb}):send(cid,txt,{reply_markup:kb});
-  }
-  await setState(uid,{step:'sc_name'});
-  const txt=`🏪 <b>إنشاء متجر</b>\n\nالخطوة 1 — اكتب اسم المتجر:`;
-  const kb=ik([[b('❌ إلغاء','cancel')]]);
-  return mid?edit(cid,mid,txt,{reply_markup:kb}):send(cid,txt,{reply_markup:kb});
+async function answerCallback(callbackQueryId, text = '') {
+  return callAPI('answerCallbackQuery', { callback_query_id: callbackQueryId, text });
 }
 
-async function showStoreCatPicker(cid,uid) {
-  const customCats=await getList('store_cats:custom');
-  const rows=[];
-  for(let i=0;i<FIXED_STORE_CATS.length;i+=2){
-    const r=[b(FIXED_STORE_CATS[i].name,`sc_cat:${FIXED_STORE_CATS[i].id}`)];
-    if(FIXED_STORE_CATS[i+1]) r.push(b(FIXED_STORE_CATS[i+1].name,`sc_cat:${FIXED_STORE_CATS[i+1].id}`));
-    rows.push(r);
-  }
-  // Custom categories
-  customCats.forEach(c=>rows.push([b(c.name,`sc_cat:custom_${c.id}`)]));
-  rows.push([b('📋 أخرى (تصنيف مخصص)','sc_cat_custom')]);
-  rows.push([b('❌ إلغاء','cancel')]);
-  return send(cid,`اختر تصنيف المتجر:`,{reply_markup:ik(rows)});
+async function sendPhoto(chatId, photo, caption, extra = {}) {
+  return callAPI('sendPhoto', { chat_id: chatId, photo, caption, parse_mode: 'HTML', ...extra });
 }
 
-// ═══════════════════════════════════════════════════════
-// السوق
-// ═══════════════════════════════════════════════════════
-async function showMarket(cid,mid) {
-  const customCats=await getList('prod_cats:custom');
-  const rows=[];
-  for(let i=0;i<FIXED_PROD_CATS.length;i+=2){
-    const r=[b(FIXED_PROD_CATS[i].name,`mcat:${FIXED_PROD_CATS[i].id}`)];
-    if(FIXED_PROD_CATS[i+1]) r.push(b(FIXED_PROD_CATS[i+1].name,`mcat:${FIXED_PROD_CATS[i+1].id}`));
-    rows.push(r);
-  }
-  if(customCats.length) rows.push([b('📋 التصنيفات المتاحة','mcat_available')]);
-  rows.push([b('➕ إضافة تصنيف','mcat_add')]);
-  rows.push([back()]);
-  const txt=`🛍️ <b>السوق</b>\n\nاختر التصنيف:`;
-  return mid?edit(cid,mid,txt,{reply_markup:rows.length?ik(rows):ik([[back()]])}):
-             send(cid,txt,{reply_markup:ik(rows)});
-}
-
-async function showMarketCustomCats(cid,mid) {
-  const cats=await getList('prod_cats:custom');
-  if(!cats.length){
-    return mid?edit(cid,mid,'لا توجد تصنيفات مضافة بعد.',{reply_markup:ik([[back('market')]])}):
-               send(cid,'لا توجد تصنيفات مضافة.',{reply_markup:ik([[back('market')]])});
-  }
-  const rows=cats.map(c=>[b(c.name,`mcat:custom_${c.id}`)]);
-  rows.push([back('market')]);
-  return mid?edit(cid,mid,`📋 <b>التصنيفات المتاحة</b>:`,{reply_markup:ik(rows)}):
-             send(cid,`📋 <b>التصنيفات المتاحة</b>:`,{reply_markup:ik(rows)});
-}
-
-async function showMarketCat(cid,mid,catKey,uid) {
-  const catName=getCatName(catKey,'prod');
-  const ids=await getList(`pcat:${catKey}`);
-  const approved=(await Promise.all(ids.slice(0,15).map(id=>getProd(id)))).filter(p=>p&&p.status==='approved');
-  let txt=`${catName}\n\n${approved.length?`${approved.length} منتج`:'لا توجد منتجات بعد.'}`;
-  const rows=approved.map(p=>[b(`${p.name.slice(0,28)} | ${p.price}₪`,`prod:${p.id}`)]);
-  rows.push([b('➕ أضف منتج',`add_to_cat:${catKey}`), back('market')]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
-}
-
-// ═══════════════════════════════════════════════════════
-// إضافة منتج — Flow كامل (7 خطوات)
-// ═══════════════════════════════════════════════════════
-async function startAddProduct(cid,mid,uid,catKey=null) {
-  const u=await getUser(uid);
-  const plan=PLANS[u.subscription||'free'];
-  const myProds=await getList(`user:${uid}:prods`);
-  if(myProds.length>=plan.products){
-    const txt=`⚠️ وصلت لحد الإعلانات (${plan.products}) في خطتك.\nرقّ للمزيد!`;
-    const kb=ik([[b('⭐ الاشتراك','subscription')],[back()]]);
-    return mid?edit(cid,mid,txt,{reply_markup:kb}):send(cid,txt,{reply_markup:kb});
-  }
-  await setState(uid,{step:'ap_condition',catKey});
-  const txt=`➕ <b>إضافة منتج</b>\n\n📍 الخطوة 1/7 — حالة المنتج؟`;
-  const kb=ik([[b('✨ جديد','ap_cond:new'),b('♻️ مستعمل','ap_cond:used'),b('⚠️ معيب','ap_cond:damaged')],[b('❌ إلغاء','cancel')]]);
-  return mid?edit(cid,mid,txt,{reply_markup:kb}):send(cid,txt,{reply_markup:kb});
-}
-
-// ═══════════════════════════════════════════════════════
-// عرض المنتج
-// ═══════════════════════════════════════════════════════
-async function showProduct(cid,prodId,uid,cbId) {
-  const p=await getProd(prodId);
-  if(!p){if(cbId)await answer(cbId,'⚠️ المنتج غير موجود',true);return;}
-  p.views=(p.views||0)+1; await saveProd(prodId,p);
-  const u=await getUser(uid);
-  u.history=[prodId,...(u.history||[]).filter(x=>x!==prodId)].slice(0,20);
-  await saveUser(uid,u);
-
-  const store=p.storeId?await getStore(p.storeId):null;
-  const cond={new:'✨ جديد',used:'♻️ مستعمل',damaged:'⚠️ معيب'}[p.condition]||'';
-  const txt=`📦 <b>${p.name}</b>\n\n`+
-    `💰 <b>${p.price} ₪</b>\n`+
-    `${store?`🏪 ${store.name}\n`:''}`+
-    `📍 ${p.city}\n`+
-    `${cond}\n`+
-    `👁️ ${p.views||0} مشاهدة\n\n`+
-    `📝 ${(p.description||'').slice(0,200)}`;
-
-  const isSaved=(u.savedProducts||[]).includes(prodId);
-  const isOwner_=p.sellerId===uid;
-  const rows=[];
-  if(p.sellerUsername) rows.push([burl('💬 تواصل مع البائع',`https://t.me/${p.sellerUsername}`)]);
-  rows.push([
-    b(isSaved?'💔 إزالة':'❤️ حفظ',isSaved?`unsave_prod:${prodId}`:`save_prod:${prodId}`),
-    b('🔗 مشاركة',`share_prod:${prodId}`),
-  ]);
-  if(store) rows.push([b('🏪 عرض المتجر',`store:${store.id}`)]);
-  if(!isOwner_&&p.status==='approved') rows.push([b('🛒 طلب المنتج',`order:${prodId}`)]);
-  if(isOwner_) rows.push([b('✏️ تعديل',`edit_prod:${prodId}`),b('🗑️ حذف',`del_prod_c:${prodId}`)]);
-  rows.push([b('🚩 تبليغ',`report_prod_q:${prodId}`), back(`mcat:${p.catKey||p.category}`)]);
-
-  if(p.photos?.length){
-    try{return await photo(cid,p.photos[0],txt,{reply_markup:ik(rows)});}catch{}
-  }
-  return send(cid,txt,{reply_markup:ik(rows)});
-}
-
-// ═══════════════════════════════════════════════════════
-// الخدمات
-// ═══════════════════════════════════════════════════════
-async function showServices(cid,mid) {
-  const rows=[];
-  for(let i=0;i<SERVICE_TYPES.length;i+=2){
-    const r=[b(SERVICE_TYPES[i].name,`svc:${SERVICE_TYPES[i].id}`)];
-    if(SERVICE_TYPES[i+1]) r.push(b(SERVICE_TYPES[i+1].name,`svc:${SERVICE_TYPES[i+1].id}`));
-    rows.push(r);
-  }
-  rows.push([back()]);
-  const txt=`🛠️ <b>الخدمات</b>\n\nاختر نوع الخدمة:`;
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
-}
-
-async function showServiceType(cid,mid,typeId,uid) {
-  const label=SERVICE_TYPES.find(s=>s.id===typeId)?.name||typeId;
-  const ids=await getList(`svc:${typeId}`);
-  const svcs=(await Promise.all(ids.slice(0,15).map(id=>getProd(id)))).filter(p=>p&&p.status==='approved');
-  let txt=`${label}\n\n${svcs.length?`${svcs.length} خدمة`:'لا توجد خدمات بعد.'}`;
-  const rows=svcs.map(s=>[b(`${s.name.slice(0,28)} | ${s.price}₪`,`prod:${s.id}`)]);
-  rows.push([b('➕ أضف خدمتك',`add_svc:${typeId}`), back('services')]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
-}
-
-// ═══════════════════════════════════════════════════════
-// المطاعم
-// ═══════════════════════════════════════════════════════
-async function showRestaurants(cid,mid) {
-  const ids=await getList('restaurants:all');
-  if(!ids.length){
-    const txt=`🍔 <b>المطاعم</b>\n\nلا توجد مطاعم بعد.`;
-    return mid?edit(cid,mid,txt,{reply_markup:ik([[b('➕ أضف مطعمك','create_restaurant')],[back()]])}):
-               send(cid,txt,{reply_markup:ik([[b('➕ أضف مطعمك','create_restaurant')],[back()]])});
-  }
-  const stores=(await Promise.all(ids.slice(0,20).map(id=>getStore(id)))).filter(Boolean);
-  const txt=`🍔 <b>المطاعم</b> — ${ids.length}\n\n`;
-  const rows=stores.map(s=>[b(`🍽️ ${s.name.slice(0,28)} | ${s.city}`,`store:${s.id}`)]);
-  rows.push([b('➕ أضف مطعمك','create_restaurant'), back()]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
-}
-
-// ═══════════════════════════════════════════════════════
-// المنتجات المميزة (للإدارة فقط)
-// ═══════════════════════════════════════════════════════
-async function showFeatured(cid,mid,uid) {
-  const u=await getUser(uid);
-  const ids=await getList('featured');
-  const prods=(await Promise.all(ids.slice(0,10).map(id=>getProd(id)))).filter(p=>p&&p.status==='approved');
-  let txt=`⭐ <b>المنتجات المميزة</b>\n\n`;
-  if(!prods.length) txt+='لا توجد منتجات مميزة حالياً.';
-  const rows=prods.map(p=>[b(`⭐ ${p.name.slice(0,28)} | ${p.price}₪`,`prod:${p.id}`)]);
-  rows.push([back()]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
-}
-
-// ═══════════════════════════════════════════════════════
-// العروض (للإدارة فقط)
-// ═══════════════════════════════════════════════════════
-async function showOffers(cid,mid,uid) {
-  const ids=await getList('offers:all');
-  const prods=(await Promise.all(ids.slice(0,10).map(id=>getProd(id)))).filter(p=>p&&p.status==='approved');
-  let txt=`🔥 <b>العروض</b>\n\n`;
-  if(!prods.length) txt+='لا توجد عروض حالياً.';
-  const rows=prods.map(p=>[b(`🔥 ${p.name.slice(0,28)} | ${p.price}₪`,`prod:${p.id}`)]);
-  rows.push([back()]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
-}
-
-// ═══════════════════════════════════════════════════════
-// البحث
-// ═══════════════════════════════════════════════════════
-async function startSearch(cid,mid,uid) {
-  await setState(uid,{step:'search'});
-  const txt=`🔍 <b>البحث</b>\n\nاكتب اسم المنتج أو المتجر أو المدينة:`;
-  const kb=ik([[b('❌ إلغاء','cancel')]]);
-  return mid?edit(cid,mid,txt,{reply_markup:kb}):send(cid,txt,{reply_markup:kb});
-}
-
-async function doSearch(cid,q) {
-  const ql=normalizeAr(q);
-  if(ql.length<2) return send(cid,'⚠️ أدخل على الأقل كلمتين.');
-  const ids=await getList('products:all');
-  const all=(await Promise.all(ids.slice(0,300).map(id=>getProd(id)))).filter(p=>p&&p.status==='approved');
-  const res=all.filter(p=>
-    normalizeAr(p.name).includes(ql)||
-    normalizeAr(p.description||'').includes(ql)||
-    normalizeAr(p.city||'').includes(ql)
-  ).slice(0,10);
-  if(!res.length) return send(cid,`🔍 لا نتائج لـ "<b>${q}</b>"`,{reply_markup:ik([[b('🔍 بحث جديد','search'),b('🏠 رئيسية','main')]])});
-  let txt=`🔍 نتائج "<b>${q}</b>" — ${res.length} نتيجة\n\n`;
-  const rows=res.map(p=>[b(`${p.name.slice(0,28)} | ${p.price}₪`,`prod:${p.id}`)]);
-  rows.push([b('🔍 بحث جديد','search'), b('🏠 رئيسية','main')]);
-  return send(cid,txt,{reply_markup:ik(rows)});
-}
-
-// ═══════════════════════════════════════════════════════
-// حسابي (6 نوافذ)
-// ═══════════════════════════════════════════════════════
-async function showAccount(cid,mid,uid) {
-  const u=await getUser(uid);
-  const plan=PLANS[u.subscription||'free'];
-  const myProds=await getList(`user:${uid}:prods`);
-  const myOrders=await getList(`user:${uid}:orders`);
-  const myStores=await getList(`user:${uid}:stores`);
-  const txt=`👤 <b>حسابي</b>\n\n`+
-    `🆔 ${uid}\n`+
-    `⭐ ${plan.name} ${plan.badge}\n`+
-    `🏪 متاجري: ${myStores.length}/${plan.stores}\n`+
-    `📦 إعلاناتي: ${myProds.length}/${plan.products}\n`+
-    `🛒 طلباتي: ${myOrders.length}\n`+
-    `❤️ المحفوظات: ${((u.savedProducts||[]).length+(u.savedStores||[]).length)}`;
-  const rows=[
-    [b('🛒 طلباتي','my_orders'),     b('📦 إعلاناتي','my_listings')],
-    [b('👁️ آخر المشاهدات','history'), b('❤️ المحفوظات','favorites')],
-    [b('⭐ الاشتراك','subscription'),  b('🏪 متجري','my_store')],
-    [back()],
-  ];
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
-}
-
-// ── المحفوظات (متجر + منتج منفصلين) ────────────────────
-async function showFavorites(cid,mid,uid) {
-  const txt=`❤️ <b>المحفوظات</b>\n\nاختر:`;
-  const kb=ik([[b('🏪 محفوظ متجر','fav_stores'),b('📦 محفوظ منتج','fav_prods')],[back('account')]]);
-  return mid?edit(cid,mid,txt,{reply_markup:kb}):send(cid,txt,{reply_markup:kb});
-}
-
-async function showFavStores(cid,mid,uid) {
-  const u=await getUser(uid);
-  const ids=u.savedStores||[];
-  if(!ids.length){
-    const txt=`🏪 <b>المتاجر المحفوظة</b>\n\nلم تحفظ أي متاجر بعد.`;
-    return mid?edit(cid,mid,txt,{reply_markup:ik([[back('favorites')]])}):send(cid,txt,{reply_markup:ik([[back('favorites')]])});
-  }
-  const stores=(await Promise.all(ids.slice(0,10).map(id=>getStore(id)))).filter(Boolean);
-  const rows=stores.map(s=>[b(`🏪 ${s.name.slice(0,28)} | ${s.city}`,`store:${s.id}`)]);
-  rows.push([back('favorites')]);
-  return mid?edit(cid,mid,`🏪 <b>المتاجر المحفوظة</b> (${ids.length})`,{reply_markup:ik(rows)}):
-             send(cid,`🏪 <b>المتاجر المحفوظة</b> (${ids.length})`,{reply_markup:ik(rows)});
-}
-
-async function showFavProds(cid,mid,uid) {
-  const u=await getUser(uid);
-  const ids=u.savedProducts||[];
-  if(!ids.length){
-    const txt=`📦 <b>المنتجات المحفوظة</b>\n\nلم تحفظ أي منتجات بعد.`;
-    return mid?edit(cid,mid,txt,{reply_markup:ik([[back('favorites')]])}):send(cid,txt,{reply_markup:ik([[back('favorites')]])});
-  }
-  const prods=(await Promise.all(ids.slice(0,10).map(id=>getProd(id)))).filter(Boolean);
-  const rows=prods.map(p=>[b(`📦 ${p.name.slice(0,28)} | ${p.price}₪`,`prod:${p.id}`)]);
-  rows.push([back('favorites')]);
-  return mid?edit(cid,mid,`📦 <b>المنتجات المحفوظة</b> (${ids.length})`,{reply_markup:ik(rows)}):
-             send(cid,`📦 <b>المنتجات المحفوظة</b> (${ids.length})`,{reply_markup:ik(rows)});
-}
-
-// ── الاشتراك ──────────────────────────────────────────
-async function showSubscription(cid,mid,uid) {
-  const u=await getUser(uid);
-  const cur=PLANS[u.subscription||'free'];
-  // نص قابل للتعديل من المالك
-  const customText=await kget('sub:template')||
-    `🟢 <b>مجاني</b> — ${PLANS.free.stores} متاجر، ${PLANS.free.products} منتجات — مجاناً\n\n`+
-    `🔵 <b>برو</b> — ${PLANS.pro.stores} متاجر، ${PLANS.pro.products} منتجاً — ${PLANS.pro.price}$/شهر\n`+
-    `   • ظهور أفضل ⭐\n\n`+
-    `🟣 <b>أعمال</b> — ${PLANS.business.stores} متاجر، غير محدود — ${PLANS.business.price}$/شهر\n`+
-    `   • شارة توثيق ✅\n   • أولوية في البحث`;
-
-  const txt=`⭐ <b>الاشتراك</b>\n\naشتراكك: ${cur.name} ${cur.badge}\n\n${customText}`;
-  const rows=[[burl('💬 تواصل للترقية',`https://t.me/${UPGRADE_USERNAME}`)]];
-  if(Number(uid)===OWNER_ID) rows.push([b('✏️ تغيير هذه الكليشة','edit_sub_template')]);
-  rows.push([back('account')]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
-}
-
-// ── آخر المشاهدات ─────────────────────────────────────
-async function showHistory(cid,mid,uid) {
-  const u=await getUser(uid);
-  const ids=u.history||[];
-  if(!ids.length){
-    return mid?edit(cid,mid,`👁️ <b>آخر المشاهدات</b>\n\nلم تشاهد أي منتجات بعد.`,{reply_markup:ik([[back('account')]])}):
-               send(cid,`👁️ <b>آخر المشاهدات</b>\n\nلم تشاهد أي منتجات بعد.`,{reply_markup:ik([[back('account')]])});
-  }
-  const prods=(await Promise.all(ids.slice(0,10).map(id=>getProd(id)))).filter(Boolean);
-  const rows=prods.map(p=>[b(`${p.name.slice(0,28)} | ${p.price}₪`,`prod:${p.id}`)]);
-  rows.push([back('account')]);
-  return mid?edit(cid,mid,`👁️ <b>آخر المشاهدات</b> (${ids.length})`,{reply_markup:ik(rows)}):
-             send(cid,`👁️ <b>آخر المشاهدات</b> (${ids.length})`,{reply_markup:ik(rows)});
-}
-
-// ── إعلاناتي ─────────────────────────────────────────
-async function showMyListings(cid,mid,uid,page=0) {
-  const PAGE=8;
-  const ids=await getList(`user:${uid}:prods`);
-  if(!ids.length){
-    return mid?edit(cid,mid,`📦 <b>إعلاناتي</b>\n\nلم تضف أي إعلانات بعد.`,{reply_markup:ik([[b('➕ أضف','add')],[back('account')]])}):
-               send(cid,`📦 <b>إعلاناتي</b>\n\nلم تضف أي إعلانات بعد.`,{reply_markup:ik([[b('➕ أضف','add')],[back('account')]])});
-  }
-  const prods=(await Promise.all(ids.slice(page*PAGE,(page+1)*PAGE).map(id=>getProd(id)))).filter(Boolean);
-  const si={pending:'⏳',approved:'✅',rejected:'❌'};
-  let txt=`📦 <b>إعلاناتي</b> (${ids.length})\n\n`;
-  const rows=prods.map(p=>{
-    txt+=`${si[p.status]||'?'} ${p.name} — ${p.price}₪\n`;
-    return [b(`${p.name.slice(0,22)}`,`prod:${p.id}`),b('🗑️',`del_prod_c:${p.id}`)];
-  });
-  const nav=[];
-  if(page>0) nav.push(b('◀️',`my_listings:${page-1}`));
-  if((page+1)*PAGE<ids.length) nav.push(b('▶️',`my_listings:${page+1}`));
-  if(nav.length) rows.push(nav);
-  rows.push([back('account')]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
-}
-
-// ── طلباتي ───────────────────────────────────────────
-async function showMyOrders(cid,mid,uid,page=0) {
-  const PAGE=8;
-  const ids=await getList(`user:${uid}:orders`);
-  if(!ids.length){
-    return mid?edit(cid,mid,`🛒 <b>طلباتي</b>\n\nلا توجد طلبات بعد.`,{reply_markup:ik([[back('account')]])}):
-               send(cid,`🛒 <b>طلباتي</b>\n\nلا توجد طلبات بعد.`,{reply_markup:ik([[back('account')]])});
-  }
-  const orders=(await Promise.all(ids.slice(page*PAGE,(page+1)*PAGE).map(id=>getOrder(id)))).filter(Boolean);
-  const si={pending:'⏳',accepted:'✅',completed:'🎉',rejected:'❌',cancelled:'🚫'};
-  let txt=`🛒 <b>طلباتي</b> (${ids.length})\n\n`;
-  const rows=orders.map(o=>{
-    txt+=`${si[o.status]} ${o.productName} — ${o.totalPrice}₪\n`;
-    return [b(`${si[o.status]} ${o.productName.slice(0,25)}`,`order_view:${o.id}`)];
-  });
-  const nav=[];
-  if(page>0) nav.push(b('◀️',`my_orders:${page-1}`));
-  if((page+1)*PAGE<ids.length) nav.push(b('▶️',`my_orders:${page+1}`));
-  if(nav.length) rows.push(nav);
-  rows.push([back('account')]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
-}
-
-async function showOrderDetail(cid,mid,orderId,uid) {
-  const o=await getOrder(orderId);
-  if(!o) return;
-  const si={pending:'⏳ انتظار',accepted:'✅ مقبول',completed:'🎉 مكتمل',rejected:'❌ مرفوض',cancelled:'🚫 ملغي'};
-  const isBuyer=o.buyerId===uid,isSeller=o.sellerId===uid;
-  const txt=`🛒 <b>تفاصيل الطلب</b>\n\n📦 ${o.productName}\n💰 ${o.totalPrice}₪\nالحالة: ${si[o.status]}\n📅 ${new Date(o.createdAt).toLocaleDateString('ar')}`;
-  const rows=[];
-  if(isBuyer&&o.status==='pending') rows.push([b('🚫 إلغاء',`order_cancel:${orderId}`)]);
-  if(isSeller){
-    if(o.status==='pending') rows.push([b('✅ قبول',`order_accept:${orderId}`),b('❌ رفض',`order_reject:${orderId}`)]);
-    if(o.status==='accepted') rows.push([b('🎉 إتمام',`order_complete:${orderId}`)]);
-  }
-  rows.push([back(isBuyer?'my_orders':'seller_orders')]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
-}
-
-async function placeOrder(cid,prodId,uid,cbId) {
-  const p=await getProd(prodId);
-  if(!p||p.status!=='approved'){await answer(cbId,'⚠️ المنتج غير متاح',true);return;}
-  if(p.sellerId===uid){await answer(cbId,'⚠️ لا يمكنك طلب منتجك',true);return;}
-  const u=await getUser(uid);
-  const orderId=genId();
-  const order={id:orderId,productId:prodId,productName:p.name,
-    buyerId:uid,buyerName:u.firstName||'عميل',
-    sellerId:p.sellerId,totalPrice:p.price,
-    status:'pending',createdAt:Date.now()};
-  await saveOrder(orderId,order);
-  await listAdd(`user:${uid}:orders`,orderId);
-  await listAdd(`seller:${p.sellerId}:orders`,orderId);
-  await notify(p.sellerId,`🛒 <b>طلب جديد!</b>\n\n📦 ${p.name}\n💰 ${p.price}₪\n👤 ${u.firstName||''} ${u.username?'@'+u.username:''}`);
-  return send(cid,`🎉 <b>تم إرسال طلبك!</b>\n\n📦 ${p.name}\n💰 ${p.price}₪\n\nسيتواصل معك البائع قريباً.`,{reply_markup:ik([[b('🛒 طلباتي','my_orders'),b('🏠 رئيسية','main')]])});
-}
-
-// ── متجري ─────────────────────────────────────────────
-async function showMyStore(cid,mid,uid) {
-  const myStores=await getList(`user:${uid}:stores`);
-  if(!myStores.length){
-    const txt=`🏪 <b>متجري</b>\n\nلا يوجد لديك متجر بعد.`;
-    const kb=ik([[b('🏪 أنشئ متجرك','create_store')],[back('account')]]);
-    return mid?edit(cid,mid,txt,{reply_markup:kb}):send(cid,txt,{reply_markup:kb});
-  }
-  // إذا كان لديه أكثر من متجر، يختار
-  if(myStores.length===1){
-    return showMyStoreDetail(cid,mid,uid,myStores[0]);
-  }
-  const stores=(await Promise.all(myStores.map(id=>getStore(id)))).filter(Boolean);
-  const rows=stores.map(s=>[b(`🏪 ${s.name}`,`my_store_sel:${s.id}`)]);
-  rows.push([b('➕ أنشئ متجراً آخر','create_store'),back('account')]);
-  return mid?edit(cid,mid,`🏪 <b>متاجري</b> (${myStores.length})`,{reply_markup:ik(rows)}):
-             send(cid,`🏪 <b>متاجري</b> (${myStores.length})`,{reply_markup:ik(rows)});
-}
-
-async function showMyStoreDetail(cid,mid,uid,storeId) {
-  const s=await getStore(storeId);
-  if(!s) return;
-  const plan=PLANS[s.subscription||'free'];
-  const prods=await getList(`user:${uid}:prods`);
-  const txt=`🏪 <b>${plan.badge?plan.badge+' ':''}${s.name}</b>\n\n`+
-    `📦 منتجاتي: ${prods.length}/${plan.products}\n`+
-    `📍 ${s.city} | ${getCatName(s.category,'store')}\n`+
-    `${s.hours?`🕐 ${s.hours}\n`:''}`+
-    `📝 ${s.description||'—'}`;
-  const rows=[
-    [b('➕ أضف منتج','add'),           b('📦 إعلاناتي','my_listings')],
-    [b('📋 الطلبات الواردة','seller_orders'), b('📊 الإحصائيات',`store_stats:${storeId}`)],
-    [b('✏️ تعديل المتجر',`edit_store:${storeId}`)],
-    [b('👁️ عرض كصفحة',`store:${storeId}`), back('account')],
-  ];
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
-}
-
-async function showSellerOrders(cid,mid,uid) {
-  const ids=await getList(`seller:${uid}:orders`);
-  if(!ids.length){
-    return mid?edit(cid,mid,`📋 <b>الطلبات الواردة</b>\n\nلا توجد طلبات.`,{reply_markup:ik([[back('my_store')]])}):
-               send(cid,`📋 لا توجد طلبات.`,{reply_markup:ik([[back('my_store')]])});
-  }
-  const orders=(await Promise.all(ids.slice(0,10).map(id=>getOrder(id)))).filter(Boolean);
-  const si={pending:'⏳',accepted:'✅',completed:'🎉',rejected:'❌',cancelled:'🚫'};
-  let txt=`📋 <b>الطلبات الواردة</b> (${ids.length})\n\n`;
-  const rows=orders.map(o=>[b(`${si[o.status]} ${o.productName.slice(0,25)} — ${o.totalPrice}₪`,`order_view:${o.id}`)]);
-  rows.push([back('my_store')]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
-}
-
-async function showStoreStats(cid,mid,uid,storeId) {
-  const prods=(await Promise.all((await getList(`user:${uid}:prods`)).map(id=>getProd(id)))).filter(Boolean);
-  const totalV=prods.reduce((s,p)=>s+(p.views||0),0);
-  const totalS=prods.reduce((s,p)=>s+(p.saves||0),0);
-  const orders=await getList(`seller:${uid}:orders`);
-  const txt=`📊 <b>الإحصائيات</b>\n\n`+
-    `📦 المنتجات: ${prods.length}\n`+
-    `👁️ المشاهدات: ${totalV}\n`+
-    `❤️ الحفظ: ${totalS}\n`+
-    `🛒 الطلبات: ${orders.length}`;
-  const skb=ik([[back(`my_store_sel:${storeId}`)]]);
-  return mid?edit(cid,mid,txt,{reply_markup:skb}):send(cid,txt,{reply_markup:skb});
-}
-
-// ═══════════════════════════════════════════════════════
-// التبليغات
-// ═══════════════════════════════════════════════════════
-async function sendReport(type,itemId,itemName,reporterUid,reporterName,reporterUsername) {
-  const rid=genId();
-  await kset(`rep:${rid}`,{id:rid,type,itemId,itemName,reporterId:reporterUid,createdAt:Date.now()});
-  await listAdd('reports:all',rid);
-  // إرسال للمالك وكل الأدمنية
-  const admins=await getList('admins:list');
-  const msg=`🚩 <b>بلاغ جديد!</b>\n\n`+
-    `النوع: ${type==='store'?'متجر':'منتج'}\n`+
-    `الاسم: ${itemName}\n`+
-    `المبلغ: ${reporterName} ${reporterUsername?'@'+reporterUsername:''}\n`+
-    `الأيدي: <code>${reporterUid}</code>`;
-  await notify(OWNER_ID,msg);
-  for(const aid of admins){
-    try{await notify(aid,msg);}catch{}
+// ==================== معالج التحديثات ====================
+async function handleUpdate(update, env) {
+  if (update.callback_query) {
+    await handleCallbackQuery(update.callback_query, env);
+  } else if (update.message) {
+    await handleMessage(update.message, env);
   }
 }
 
-// ═══════════════════════════════════════════════════════
-// لوحة الإدارة
-// ═══════════════════════════════════════════════════════
-async function showAdmin(cid,mid,u) {
-  const [totalP,totalS,totalR,pending]=await Promise.all([
-    getList('products:all').then(l=>l.length),
-    getList('stores:all').then(l=>l.length),
-    getList('reports:all').then(l=>l.length),
-    getList('pending:products').then(l=>l.length),
-  ]);
-  const txt=`⚙️ <b>لوحة الإدارة</b>\n\n`+
-    `📦 المنتجات: ${totalP} | ⏳ انتظار: ${pending}\n`+
-    `🏪 المتاجر: ${totalS}\n`+
-    `🚩 البلاغات: ${totalR}\n\n`+
-    `مستواك: ${isOwner(u)?'👑 مالك':u.adminRole==='admin'?'🔴 مدير':'🟡 مشرف'}`;
-  const rows=[
-    [b('⏳ موافقة المنتجات','admin_pending:0'), b('🚩 البلاغات','admin_reports')],
-    [b('⭐ المميزة','admin_featured'),            b('🔥 العروض','admin_offers')],
-    [b('📋 إدارة التصنيفات','admin_cats')],
-  ];
-  if(isOwner(u)||u.adminRole==='admin'){
-    rows.push([b('👥 المشرفين','admin_mods'),b('⭐ الاشتراكات','admin_subs')]);
-  }
-  rows.push([back()]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
+// ==================== الحالة ====================
+async function getState(env, userId) {
+  return await kvGet(env, `state:${userId}`) || { step: null, data: {} };
+}
+async function setState(env, userId, state) {
+  await kvSet(env, `state:${userId}`, state);
+}
+async function clearState(env, userId) {
+  await kvDel(env, `state:${userId}`);
 }
 
-async function showAdminPending(cid,mid,page=0) {
-  const PAGE=5;
-  const ids=await getList('pending:products');
-  if(!ids.length){
-    return mid?edit(cid,mid,`⏳ لا توجد منتجات تنتظر الموافقة ✅`,{reply_markup:ik([[back('admin')]])}):
-               send(cid,`⏳ لا توجد منتجات تنتظر الموافقة ✅`,{reply_markup:ik([[back('admin')]])});
-  }
-  const pageIds=ids.slice(page*PAGE,(page+1)*PAGE);
-  const prods=(await Promise.all(pageIds.map(id=>getProd(id)))).filter(Boolean);
-  let txt=`⏳ <b>تنتظر الموافقة</b> (${ids.length})\n\n`;
-  const rows=[];
-  for(const p of prods){
-    txt+=`📦 <b>${p.name}</b>\n💰 ${p.price}₪ | ${getCatName(p.catKey||p.category,'prod')} | ${p.city}\n👤 ${p.sellerName}\n\n`;
-    rows.push([b('✅ قبول',`approve:${p.id}`),b('❌ رفض',`reject:${p.id}`),b(p.name.slice(0,12),`prod:${p.id}`)]);
-  }
-  const nav=[];
-  if(page>0) nav.push(b('◀️',`admin_pending:${page-1}`));
-  if((page+1)*PAGE<ids.length) nav.push(b('▶️',`admin_pending:${page+1}`));
-  if(nav.length) rows.push(nav);
-  rows.push([back('admin')]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
+// ==================== المستخدم ====================
+async function getUser(env, userId) {
+  return await kvGet(env, `user:${userId}`) || { id: userId, stores: [], saved_stores: [], saved_products: [], products: [], ads: [], premium: false };
+}
+async function saveUser(env, user) {
+  await kvSet(env, `user:${user.id}`, user);
 }
 
-async function approveProduct(prodId,approved,adminId) {
-  const p=await getProd(prodId);
-  if(!p) return false;
-  p.status=approved?'approved':'rejected';
-  p.reviewedBy=adminId; p.reviewedAt=Date.now();
-  await saveProd(prodId,p);
-  await listRm('pending:products',prodId);
-  if(approved){
-    await listAdd('products:all',prodId);
-    await listAdd(`pcat:${p.catKey||p.category}`,prodId);
-    if(p.isService) await listAdd(`svc:${p.serviceType}`,prodId);
-    await notify(p.sellerId,`✅ <b>تمت الموافقة على إعلانك!</b>\n\n📦 ${p.name} أصبح مرئياً للجميع 🎉`);
-  } else {
-    await notify(p.sellerId,`❌ <b>تم رفض إعلانك</b>\n\n📦 ${p.name}\n\nتواصل مع الإدارة.`);
-  }
+// ==================== ID Generator ====================
+async function genId(env, prefix) {
+  const counter = (await kvGet(env, `counter:${prefix}`) || 0) + 1;
+  await kvSet(env, `counter:${prefix}`, counter);
+  return `${prefix}_${counter}_${Date.now()}`;
+}
+
+// ==================== المتاجر ====================
+async function getAllStores(env) {
+  return await kvGet(env, 'all_stores') || [];
+}
+async function saveAllStores(env, stores) {
+  await kvSet(env, 'all_stores', stores);
+}
+async function getStore(env, storeId) {
+  return await kvGet(env, `store:${storeId}`);
+}
+async function saveStore(env, store) {
+  await kvSet(env, `store:${store.id}`, store);
+}
+async function deleteStore(env, storeId) {
+  const stores = await getAllStores(env);
+  const updated = stores.filter(id => id !== storeId);
+  await saveAllStores(env, updated);
+  await kvDel(env, `store:${storeId}`);
+}
+
+// ==================== المنتجات ====================
+async function getAllProducts(env) {
+  return await kvGet(env, 'all_products') || [];
+}
+async function getProduct(env, productId) {
+  return await kvGet(env, `product:${productId}`);
+}
+async function saveProduct(env, product) {
+  await kvSet(env, `product:${product.id}`, product);
+}
+async function deleteProduct(env, productId) {
+  const products = await getAllProducts(env);
+  const updated = products.filter(id => id !== productId);
+  await kvSet(env, 'all_products', updated);
+  await kvDel(env, `product:${productId}`);
+}
+
+// ==================== تصانيف السوق ====================
+async function getMarketCategories(env) {
+  const custom = await kvGet(env, 'market_categories') || [];
+  const base = ['👗 ملابس', '📱 إلكترونيات', '🛒 أغذية ومؤن', '🏠 المنزل والأثاث', '🧸 أطفال وألعاب', '💄 تجميل وعناية', '📚 كتب وقرطاسية', '⚽ رياضة', '🔧 أدوات ومعدات'];
+  return [...base, ...custom];
+}
+async function addMarketCategory(env, category) {
+  const custom = await kvGet(env, 'market_categories') || [];
+  custom.push(category);
+  await kvSet(env, 'market_categories', custom);
+}
+async function removeMarketCategory(env, category) {
+  const custom = await kvGet(env, 'market_categories') || [];
+  const base = ['👗 ملابس', '📱 إلكترونيات', '🛒 أغذية ومؤن', '🏠 المنزل والأثاث', '🧸 أطفال وألعاب', '💄 تجميل وعناية', '📚 كتب وقرطاسية', '⚽ رياضة', '🔧 أدوات ومعدات'];
+  if (base.includes(category)) return false;
+  const updated = custom.filter(c => c !== category);
+  await kvSet(env, 'market_categories', updated);
   return true;
 }
 
-async function showAdminReports(cid,mid) {
-  const ids=await getList('reports:all');
-  if(!ids.length){
-    return mid?edit(cid,mid,`🚩 لا توجد بلاغات.`,{reply_markup:ik([[back('admin')]])}):
-               send(cid,`🚩 لا توجد بلاغات.`,{reply_markup:ik([[back('admin')]])});
-  }
-  const reps=(await Promise.all(ids.slice(0,8).map(id=>kget(`rep:${id}`)))).filter(Boolean);
-  let txt=`🚩 <b>البلاغات</b> (${ids.length})\n\n`;
-  const rows=reps.map(r=>{
-    txt+=`• ${r.type==='store'?'متجر':'منتج'}: ${r.itemName||r.itemId.slice(0,10)}\n`;
-    return [
-      b('✅ حل',`resolve_rep:${r.id}`),
-      b(`عرض`,r.type==='store'?`store:${r.itemId}`:`prod:${r.itemId}`),
-    ];
-  });
-  rows.push([back('admin')]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
+// ==================== تصانيف المتاجر ====================
+const BASE_STORE_CATS = ['🍽️ مطعم وكافيه', '🛍️ بيع بالتجزئة', '💊 صيدلية', '📦 بيع بالجملة', '🏪 سوبر ماركت', '🥐 مخبز وحلويات', '🔩 ورشة وصيانة'];
+async function getStoreCategories(env) {
+  const custom = await kvGet(env, 'store_categories') || [];
+  return [...BASE_STORE_CATS, ...custom];
+}
+async function addStoreCategory(env, category) {
+  const custom = await kvGet(env, 'store_categories') || [];
+  custom.push(category);
+  await kvSet(env, 'store_categories', custom);
 }
 
-async function showAdminFeatured(cid,mid) {
-  const ids=await getList('featured');
-  const prods=(await Promise.all(ids.slice(0,8).map(id=>getProd(id)))).filter(Boolean);
-  let txt=`⭐ <b>المنتجات المميزة</b> (${ids.length})\n\n`;
-  const rows=prods.map(p=>[b('🗑️ إزالة',`unfeat:${p.id}`),b(p.name.slice(0,24),`prod:${p.id}`)]);
-  rows.push([b('➕ أضف مميزة','do_feature'),back('admin')]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
+// ==================== المشرفون ====================
+async function getAdmins(env) {
+  return await kvGet(env, 'admins') || [];
+}
+async function isAdmin(env, userId) {
+  if (userId === OWNER_ID) return true;
+  const admins = await getAdmins(env);
+  return admins.includes(userId);
 }
 
-async function showAdminOffers(cid,mid) {
-  const ids=await getList('offers:all');
-  const prods=(await Promise.all(ids.slice(0,8).map(id=>getProd(id)))).filter(Boolean);
-  let txt=`🔥 <b>العروض</b> (${ids.length})\n\n`;
-  const rows=prods.map(p=>[b('🗑️ إزالة',`unoffer:${p.id}`),b(p.name.slice(0,24),`prod:${p.id}`)]);
-  rows.push([b('➕ أضف عرض','do_offer'),back('admin')]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
+// ==================== التطبيع العربي للتصانيف ====================
+function normalizeArabic(text) {
+  return text
+    .trim()
+    .replace(/[أإآا]/g, 'ا')
+    .replace(/[ةه]/g, 'ه')
+    .replace(/[يىئ]/g, 'ي')
+    .replace(/[ؤو]/g, 'و')
+    .replace(/[\u0610-\u061A\u064B-\u065F]/g, '') // تشكيل
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
 }
-
-async function showAdminCats(cid,mid) {
-  const customStore=await getList('store_cats:custom');
-  const customProd=await getList('prod_cats:custom');
-  let txt=`📋 <b>إدارة التصنيفات المخصصة</b>\n\n`;
-  txt+=`<b>🏪 تصنيفات المتاجر المضافة:</b>\n`;
-  if(!customStore.length) txt+='لا توجد\n';
-  customStore.forEach(c=>{txt+=`• ${c.name}\n`;});
-  txt+=`\n<b>🛍️ تصنيفات المنتجات المضافة:</b>\n`;
-  if(!customProd.length) txt+='لا توجد\n';
-  customProd.forEach(c=>{txt+=`• ${c.name}\n`;});
-  const rows=[];
-  customStore.forEach(c=>rows.push([b(`🗑️ حذف: ${c.name.slice(0,20)}`,`admin_del_scat:${c.id}`)]));
-  customProd.forEach(c=>rows.push([b(`🗑️ حذف: ${c.name.slice(0,20)}`,`admin_del_pcat:${c.id}`)]));
-  rows.push([back('admin')]);
-  return mid?edit(cid,mid,txt,{reply_markup:ik(rows)}):send(cid,txt,{reply_markup:ik(rows)});
+function categoriesMatch(a, b) {
+  return normalizeArabic(a) === normalizeArabic(b);
 }
-
-// ═══════════════════════════════════════════════════════
-// Helper — اسم التصنيف
-// ═══════════════════════════════════════════════════════
-function getCatName(catKey,type) {
-  if(type==='store'){
-    const fixed=FIXED_STORE_CATS.find(c=>c.id===catKey);
-    if(fixed) return fixed.name;
-    // custom
-    return catKey||'أخرى';
-  } else {
-    const fixed=FIXED_PROD_CATS.find(c=>c.id===catKey);
-    if(fixed) return fixed.name;
-    const svc=SERVICE_TYPES.find(s=>s.id===catKey);
-    if(svc) return svc.name;
-    return catKey||'أخرى';
-  }
-}
-
-// ═══════════════════════════════════════════════════════
-// Callback Handler
-// ═══════════════════════════════════════════════════════
-async function onCallback(update) {
-  const cb=update.callback_query;
-  const cid=cb.message.chat.id;
-  const mid=cb.message.message_id;
-  const uid=cb.from.id;
-  const data=cb.data;
-  await answer(cb.id);
-
-  const u=await getUser(uid);
-  if(u.firstName!==cb.from.first_name||u.username!==cb.from.username){
-    u.firstName=cb.from.first_name; u.username=cb.from.username;
-    await saveUser(uid,u);
-  }
-
-  // ── الرئيسية ──────────────────────────────────────────
-  if(data==='main')        return showMain(cid,mid,u);
-  if(data==='stores')      return showStoresMenu(cid,mid);
-  if(data==='market')      return showMarket(cid,mid);
-  if(data==='services')    return showServices(cid,mid);
-  if(data==='restaurants') return showRestaurants(cid,mid);
-  if(data==='featured')    return showFeatured(cid,mid,uid);
-  if(data==='offers')      return showOffers(cid,mid,uid);
-  if(data==='add')         return startAddProduct(cid,mid,uid);
-  if(data==='account')     return showAccount(cid,mid,uid);
-  if(data==='search')      return startSearch(cid,mid,uid);
-  if(data==='all_cats')    return showAllCats(cid,mid);
-  if(data==='create_store')return startCreateStore(cid,mid,uid);
-  if(data==='create_restaurant') return startCreateStore(cid,mid,uid);
-  if(data==='my_listings') return showMyListings(cid,mid,uid);
-  if(data==='my_orders')   return showMyOrders(cid,mid,uid);
-  if(data==='history')     return showHistory(cid,mid,uid);
-  if(data==='favorites')   return showFavorites(cid,mid,uid);
-  if(data==='fav_stores')  return showFavStores(cid,mid,uid);
-  if(data==='fav_prods')   return showFavProds(cid,mid,uid);
-  if(data==='subscription')return showSubscription(cid,mid,uid);
-  if(data==='my_store')    return showMyStore(cid,mid,uid);
-  if(data==='seller_orders') return showSellerOrders(cid,mid,uid);
-  if(data==='mcat_available') return showMarketCustomCats(cid,mid);
-  if(data==='noop')        return;
-  if(data==='cancel'){await clearState(uid);return showMain(cid,mid,u);}
-
-  // ── Paginated ─────────────────────────────────────────
-  if(data.startsWith('stores_list:')) return showStoresList(cid,mid,parseInt(data.split(':')[1])||0);
-  if(data.startsWith('my_listings:')) return showMyListings(cid,mid,uid,parseInt(data.split(':')[1])||0);
-  if(data.startsWith('my_orders:'))   return showMyOrders(cid,mid,uid,parseInt(data.split(':')[1])||0);
-  if(data.startsWith('admin_pending:')) {
-    if(!isMod(u)) return answer(cb.id,'⛔',true);
-    return showAdminPending(cid,mid,parseInt(data.split(':')[1])||0);
-  }
-
-  // ── متجر ─────────────────────────────────────────────
-  if(data.startsWith('store:')&&!data.includes('_prods')) return showStore(cid,data.split(':')[1],uid,cb.id);
-  if(data.startsWith('store_prods:')){
-    const [,sid,p]=data.split(':');
-    return showStoreProducts(cid,mid,sid,parseInt(p||0));
-  }
-  if(data.startsWith('my_store_sel:')) return showMyStoreDetail(cid,mid,uid,data.split(':')[1]);
-
-  // ── حفظ/إلغاء متجر ───────────────────────────────────
-  if(data.startsWith('save_store:')){
-    const sid=data.split(':')[1];
-    const pu=await getUser(uid);
-    pu.savedStores=[sid,...(pu.savedStores||[]).filter(x=>x!==sid)];
-    await saveUser(uid,pu);
-    return answer(cb.id,'❤️ تم حفظ المتجر!');
-  }
-  if(data.startsWith('unsave_store:')){
-    const sid=data.split(':')[1];
-    const pu=await getUser(uid);
-    pu.savedStores=(pu.savedStores||[]).filter(x=>x!==sid);
-    await saveUser(uid,pu);
-    return answer(cb.id,'💔 تمت إزالة المتجر من المحفوظات');
-  }
-
-  // ── حذف متجر (إدارة) ─────────────────────────────────
-  if(data.startsWith('del_store_c:')){
-    if(!isAdmin(u)) return answer(cb.id,'⛔',true);
-    const sid=data.split(':')[1];
-    const s=await getStore(sid);
-    if(!s) return;
-    const txt=`⚠️ هل أنت متأكد من حذف متجر "<b>${s.name}</b>"؟`;
-    return edit(cid,mid,txt,{reply_markup:ik([[b('✅ نعم، احذف',`del_store:${sid}`),b('❌ لا',`store:${sid}`)]])});
-  }
-  if(data.startsWith('del_store:')){
-    if(!isAdmin(u)) return answer(cb.id,'⛔',true);
-    const sid=data.split(':')[1];
-    const s=await getStore(sid);
-    if(s){
-      await kdel(`s:${sid}`);
-      await listRm('stores:all',sid);
-      await listRm('restaurants:all',sid);
-      await listRm(`user:${s.ownerId}:stores`,sid);
-      await notify(s.ownerId,`⚠️ تم حذف متجرك "<b>${s.name}</b>" من قبل الإدارة.`);
-      await answer(cb.id,'✅ تم الحذف');
+async function findMatchingCategory(env, type, input) {
+  const cats = type === 'market' ? await getMarketCategories(env) : await getStoreCategories(env);
+  for (const cat of cats) {
+    const cleanCat = cat.replace(/^[\p{Emoji}\s]+/u, '').trim();
+    if (categoriesMatch(cleanCat, input) || categoriesMatch(cat, input)) {
+      return cat;
     }
-    return showStoresList(cid,mid,0);
   }
-
-  // ── تبليغ عن متجر ────────────────────────────────────
-  if(data.startsWith('report_store_q:')){
-    const sid=data.split(':')[1];
-    const s=await getStore(sid);
-    return edit(cid,mid,`🚩 هل أنت متأكد من التبليغ عن متجر "<b>${s?.name||sid}</b>"؟`,{
-      reply_markup:ik([[b('✅ نعم، أبلّغ',`report_store:${sid}`),b('❌ لا',`store:${sid}`)]])
-    });
-  }
-  if(data.startsWith('report_store:')){
-    const sid=data.split(':')[1];
-    const s=await getStore(sid);
-    await sendReport('store',sid,s?.name||sid,uid,u.firstName||'',u.username||'');
-    return answer(cb.id,'🚩 تم إرسال البلاغ للإدارة',true);
-  }
-
-  // ── تبليغ عن منتج ────────────────────────────────────
-  if(data.startsWith('report_prod_q:')){
-    const pid=data.split(':')[1];
-    const p=await getProd(pid);
-    return edit(cid,mid,`🚩 هل أنت متأكد من التبليغ عن "<b>${p?.name||pid}</b>"؟`,{
-      reply_markup:ik([[b('✅ نعم، أبلّغ',`report_prod:${pid}`),b('❌ لا',`prod:${pid}`)]])
-    });
-  }
-  if(data.startsWith('report_prod:')){
-    const pid=data.split(':')[1];
-    const p=await getProd(pid);
-    await sendReport('prod',pid,p?.name||pid,uid,u.firstName||'',u.username||'');
-    return answer(cb.id,'🚩 تم إرسال البلاغ للإدارة',true);
-  }
-
-  // ── تصنيفات السوق ────────────────────────────────────
-  if(data.startsWith('mcat:')){
-    const catKey=data.slice(5);
-    return showMarketCat(cid,mid,catKey,uid);
-  }
-  if(data==='mcat_add'){
-    await setState(uid,{step:'add_prod_cat'});
-    return edit(cid,mid,`➕ <b>إضافة تصنيف للمنتجات</b>\n\nاكتب اسم التصنيف:`,{reply_markup:ik([[b('❌ إلغاء','cancel')]])});
-  }
-  if(data.startsWith('add_to_cat:')){
-    const catKey=data.slice(11);
-    return startAddProduct(cid,mid,uid,catKey);
-  }
-
-  // ── تصنيف متجر (إنشاء) ───────────────────────────────
-  if(data.startsWith('sc_cat:')){
-    const catId=data.slice(7);
-    const st=await getState(uid);
-    await setState(uid,{...st,step:'sc_hours',category:catId});
-    return send(cid,`✅ التصنيف محدد\n\nاكتب ساعات العمل (مثال: 9ص–11م) أو اضغط تخطى:`,{
-      reply_markup:ik([[b('⏭️ تخطى','sc_skip_hours')],[b('❌ إلغاء','cancel')]])
-    });
-  }
-  if(data==='sc_cat_custom'){
-    const st=await getState(uid);
-    await setState(uid,{...st,step:'sc_custom_cat'});
-    return send(cid,`📋 ضع تصنيفاً لمتجرك (اكتبه):`,{reply_markup:ik([[b('❌ إلغاء','cancel')]])});
-  }
-  if(data==='sc_skip_hours'||data==='sc_do_city'){
-    const st=await getState(uid);
-    await setState(uid,{...st,step:'sc_city',hours:st.hours||'—'});
-    const cityRows=buildCityPicker('sc_city');
-    return send(cid,'📍 اختر مدينة المتجر:',{reply_markup:ik(cityRows)});
-  }
-  if(data.startsWith('sc_city:')){
-    const city=data.slice(8);
-    if(city==='other'){
-      await setState(uid,{...await getState(uid),step:'sc_custom_city'});
-      return send(cid,'📍 اكتب اسم مدينتك:',{reply_markup:ik([[b('❌ إلغاء','cancel')]])});
-    }
-    return finalizeStore(cid,mid,uid,city);
-  }
-
-  // ── إضافة منتج flow ───────────────────────────────────
-  if(data.startsWith('ap_cond:')){
-    const cond=data.split(':')[1];
-    const st=await getState(uid);
-    await setState(uid,{...st,step:'ap_photos',condition:cond});
-    return send(cid,`✅ الحالة: ${cond==='new'?'جديد':cond==='used'?'مستعمل':'معيب'}\n\n📍 الخطوة 2/7 — أرسل صور المنتج (حتى 5):`,{
-      reply_markup:ik([[b('⏭️ تخطى الصور','ap_skip_photos')],[b('❌ إلغاء','cancel')]])
-    });
-  }
-  if(data==='ap_skip_photos'||data==='ap_next_name'){
-    const st=await getState(uid);
-    await setState(uid,{...st,step:'ap_name',photos:st.photos||[]});
-    return send(cid,`📍 الخطوة 3/7 — اكتب اسم المنتج:`,{reply_markup:ik([[b('❌ إلغاء','cancel')]])});
-  }
-
-  // city picker for product
-  if(data.startsWith('ap_city:')){
-    const city=data.slice(8);
-    if(city==='other'){
-      await setState(uid,{...await getState(uid),step:'ap_custom_city'});
-      return send(cid,'📍 اكتب اسم مدينتك:',{reply_markup:ik([[b('❌ إلغاء','cancel')]])});
-    }
-    return showProductConfirm(cid,mid,uid,city);
-  }
-  if(data==='ap_publish') return finalizeProduct(cid,mid,uid);
-
-  // ── خدمة ─────────────────────────────────────────────
-  if(data.startsWith('svc:')){
-    const tid=data.slice(4);
-    return showServiceType(cid,mid,tid,uid);
-  }
-  if(data.startsWith('add_svc:')){
-    const tid=data.slice(8);
-    await setState(uid,{step:'ap_condition',isService:true,serviceType:tid,catKey:tid});
-    return send(cid,`🛠️ <b>إضافة خدمة</b>\n\nالخطوة 1/7 — حالة الخدمة؟`,{
-      reply_markup:ik([[b('✨ جديدة','ap_cond:new'),b('♻️ مستعملة','ap_cond:used')],[b('❌ إلغاء','cancel')]])
-    });
-  }
-
-  // ── منتج ─────────────────────────────────────────────
-  if(data.startsWith('prod:')) return showProduct(cid,data.split(':')[1],uid,cb.id);
-
-  // ── حفظ/إلغاء منتج ───────────────────────────────────
-  if(data.startsWith('save_prod:')){
-    const pid=data.split(':')[1];
-    const pu=await getUser(uid);
-    pu.savedProducts=[pid,...(pu.savedProducts||[]).filter(x=>x!==pid)];
-    const prod=await getProd(pid);
-    if(prod){prod.saves=(prod.saves||0)+1;await saveProd(pid,prod);}
-    await saveUser(uid,pu);
-    return answer(cb.id,'❤️ تم الحفظ!');
-  }
-  if(data.startsWith('unsave_prod:')){
-    const pid=data.split(':')[1];
-    const pu=await getUser(uid);
-    pu.savedProducts=(pu.savedProducts||[]).filter(x=>x!==pid);
-    await saveUser(uid,pu);
-    return answer(cb.id,'💔 تمت الإزالة');
-  }
-  if(data.startsWith('share_prod:')){
-    return answer(cb.id,`🔗 t.me/Soqna_bot?start=p_${data.split(':')[1]}`,true);
-  }
-  if(data.startsWith('del_prod_c:')){
-    const pid=data.split(':')[1];
-    const p=await getProd(pid);
-    return edit(cid,mid,`⚠️ هل تريد حذف "<b>${p?.name||pid}</b>"؟`,{
-      reply_markup:ik([[b('✅ نعم احذف',`del_prod:${pid}`),b('❌ لا','my_listings')]])
-    });
-  }
-  if(data.startsWith('del_prod:')){
-    const pid=data.split(':')[1];
-    const prod=await getProd(pid);
-    if(prod&&(prod.sellerId===uid||isAdmin(u))){
-      await kdel(`p:${pid}`);
-      await listRm('products:all',pid);
-      await listRm(`pcat:${prod.catKey||prod.category}`,pid);
-      await listRm(`user:${prod.sellerId}:prods`,pid);
-      await listRm('pending:products',pid);
-      await listRm('featured',pid);
-      await listRm('offers:all',pid);
-      if(prod.isService) await listRm(`svc:${prod.serviceType}`,pid);
-      if(isAdmin(u)&&prod.sellerId!==uid)
-        await notify(prod.sellerId,`⚠️ تم حذف إعلانك "<b>${prod.name}</b>" من قبل الإدارة.`);
-    }
-    return showMyListings(cid,mid,uid);
-  }
-
-  // ── الطلبات ───────────────────────────────────────────
-  if(data.startsWith('order:'))         return placeOrder(cid,data.split(':')[1],uid,cb.id);
-  if(data.startsWith('order_view:'))    return showOrderDetail(cid,mid,data.split(':')[1],uid);
-  if(data.startsWith('order_cancel:')){
-    const oid=data.split(':')[1],o=await getOrder(oid);
-    if(o&&o.buyerId===uid&&o.status==='pending'){o.status='cancelled';await saveOrder(oid,o);await notify(o.sellerId,`🚫 تم إلغاء الطلب: <b>${o.productName}</b>.`);}
-    return showMyOrders(cid,mid,uid);
-  }
-  if(data.startsWith('order_accept:')){
-    const oid=data.split(':')[1],o=await getOrder(oid);
-    if(o&&o.sellerId===uid&&o.status==='pending'){o.status='accepted';await saveOrder(oid,o);await notify(o.buyerId,`✅ تم قبول طلبك: <b>${o.productName}</b>!`);}
-    return showOrderDetail(cid,mid,oid,uid);
-  }
-  if(data.startsWith('order_reject:')){
-    const oid=data.split(':')[1],o=await getOrder(oid);
-    if(o&&o.sellerId===uid&&o.status==='pending'){o.status='rejected';await saveOrder(oid,o);await notify(o.buyerId,`❌ تم رفض طلبك: <b>${o.productName}</b>.`);}
-    return showOrderDetail(cid,mid,oid,uid);
-  }
-  if(data.startsWith('order_complete:')){
-    const oid=data.split(':')[1],o=await getOrder(oid);
-    if(o&&o.sellerId===uid&&o.status==='accepted'){o.status='completed';await saveOrder(oid,o);await notify(o.buyerId,`🎉 اكتمل طلبك: <b>${o.productName}</b>!`);}
-    return showOrderDetail(cid,mid,oid,uid);
-  }
-
-  // ── إحصائيات ─────────────────────────────────────────
-  if(data.startsWith('store_stats:')) return showStoreStats(cid,mid,uid,data.split(':')[1]);
-
-  // ── إدارة ────────────────────────────────────────────
-  if(data==='admin'){
-    if(!isAdmin(u)) return answer(cb.id,'⛔ غير مصرح',true);
-    return showAdmin(cid,mid,u);
-  }
-  if(data==='admin_reports')  {if(!isMod(u))return;return showAdminReports(cid,mid);}
-  if(data==='admin_featured') {if(!isAdmin(u))return;return showAdminFeatured(cid,mid);}
-  if(data==='admin_offers')   {if(!isAdmin(u))return;return showAdminOffers(cid,mid);}
-  if(data==='admin_cats')     {if(!isAdmin(u))return;return showAdminCats(cid,mid);}
-  if(data==='admin_mods')     {
-    if(!isOwner(u)&&u.adminRole!=='admin') return;
-    const txt=`👥 <b>إدارة المشرفين</b>\n\n/setmod [أيدي] [admin|moderator|remove]`;
-    return edit(cid,mid,txt,{reply_markup:ik([[back('admin')]])});
-  }
-  if(data==='admin_subs'){
-    if(!isOwner(u)&&u.adminRole!=='admin') return;
-    const txt=`⭐ <b>إدارة الاشتراكات</b>\n\n/setsub [أيدي] [free|pro|business]`;
-    return edit(cid,mid,txt,{reply_markup:ik([[back('admin')]])});
-  }
-
-  if(data.startsWith('approve:')){
-    if(!isMod(u)) return answer(cb.id,'⛔',true);
-    const ok=await approveProduct(data.split(':')[1],true,uid);
-    await answer(cb.id,ok?'✅ تمت الموافقة':'⚠️ خطأ');
-    return showAdminPending(cid,mid,0);
-  }
-  if(data.startsWith('reject:')){
-    if(!isMod(u)) return answer(cb.id,'⛔',true);
-    await approveProduct(data.split(':')[1],false,uid);
-    await answer(cb.id,'❌ تم الرفض');
-    return showAdminPending(cid,mid,0);
-  }
-  if(data.startsWith('resolve_rep:')){
-    if(!isMod(u)) return;
-    const rid=data.split(':')[1];
-    await listRm('reports:all',rid); await kdel(`rep:${rid}`);
-    await answer(cb.id,'✅ تم حل البلاغ');
-    return showAdminReports(cid,mid);
-  }
-
-  // المميزة والعروض
-  if(data==='do_feature'){
-    if(!isAdmin(u)) return;
-    await setState(uid,{step:'featuring'});
-    return edit(cid,mid,'⭐ أرسل معرف المنتج (ID) لتمييزه:',{reply_markup:ik([[b('❌ إلغاء','cancel')]])});
-  }
-  if(data.startsWith('unfeat:')){
-    if(!isAdmin(u)) return;
-    await listRm('featured',data.split(':')[1]);
-    await answer(cb.id,'✅ تمت الإزالة');
-    return showAdminFeatured(cid,mid);
-  }
-  if(data==='do_offer'){
-    if(!isAdmin(u)) return;
-    await setState(uid,{step:'offering'});
-    return edit(cid,mid,'🔥 أرسل معرف المنتج (ID) لإضافته للعروض:',{reply_markup:ik([[b('❌ إلغاء','cancel')]])});
-  }
-  if(data.startsWith('unoffer:')){
-    if(!isAdmin(u)) return;
-    await listRm('offers:all',data.split(':')[1]);
-    await answer(cb.id,'✅ تمت الإزالة');
-    return showAdminOffers(cid,mid);
-  }
-
-  // حذف تصنيف مخصص
-  if(data.startsWith('admin_del_scat:')){
-    if(!isAdmin(u)) return;
-    const catId=data.slice(15);
-    const cats=await getList('store_cats:custom');
-    const cat=cats.find(c=>c.id===catId);
-    await kset('store_cats:custom',cats.filter(c=>c.id!==catId));
-    await answer(cb.id,`✅ تم حذف التصنيف: ${cat?.name||catId}`);
-    return showAdminCats(cid,mid);
-  }
-  if(data.startsWith('admin_del_pcat:')){
-    if(!isAdmin(u)) return;
-    const catId=data.slice(15);
-    const cats=await getList('prod_cats:custom');
-    const cat=cats.find(c=>c.id===catId);
-    await kset('prod_cats:custom',cats.filter(c=>c.id!==catId));
-    await answer(cb.id,`✅ تم حذف التصنيف: ${cat?.name||catId}`);
-    return showAdminCats(cid,mid);
-  }
-
-  // تعديل الاشتراك template
-  if(data==='edit_sub_template'){
-    if(!isOwner(u)) return answer(cb.id,'⛔',true);
-    await setState(uid,{step:'edit_sub_tmpl'});
-    return send(cid,'✏️ اكتب النص الجديد لصفحة الاشتراك:',{reply_markup:ik([[b('❌ إلغاء','cancel')]])});
-  }
-
-  // تعديل متجر
-  if(data.startsWith('edit_store:')){
-    const sid=data.slice(11);
-    await setState(uid,{step:'edit_store_desc',storeId:sid});
-    return send(cid,'✏️ اكتب الوصف الجديد للمتجر:',{reply_markup:ik([[b('❌ إلغاء','cancel')]])});
-  }
+  return null;
 }
 
-// ═══════════════════════════════════════════════════════
-// Helpers للـ flows
-// ═══════════════════════════════════════════════════════
-function buildCityPicker(prefix) {
-  const rows=[];
-  for(let i=0;i<FIXED_CITIES.length;i+=3)
-    rows.push(FIXED_CITIES.slice(i,i+3).map(c=>b(c,`${prefix}:${c}`)));
-  rows.push([b('📍 أخرى',`${prefix}:other`)]);
-  rows.push([b('❌ إلغاء','cancel')]);
-  return rows;
-}
+// ==================== المدن الفلسطينية ====================
+const CITIES = ['🕌 القدس', '🌊 غزة', '🌿 رام الله', '🏙️ نابلس', '🌸 الخليل', '⛪ بيت لحم', '🌴 يافا', '🌊 حيفا', '🌾 جنين', '🏔️ طولكرم', '🌿 قلقيلية', '🕌 أريحا', '🌊 طوباس', '🌿 سلفيت', '🏙️ دير البلح', '🌊 خان يونس', '🌿 رفح'];
 
-async function showProductConfirm(cid,mid,uid,city) {
-  const st=await getState(uid);
-  if(!st.name||st.price===undefined) return;
-  await setState(uid,{...st,step:'ap_confirm',city});
-  const cond={new:'✨ جديد',used:'♻️ مستعمل',damaged:'⚠️ معيب'}[st.condition]||'—';
-  const txt=`📋 <b>مراجعة الإعلان</b>\n\n`+
-    `📦 ${st.name}\n📝 ${(st.description||'').slice(0,80)}\n`+
-    `💰 ${st.price} ₪\n${cond}\n📍 ${city}\n`+
-    `🖼️ ${(st.photos||[]).length} صور\n\n`+
-    `هل تريد النشر؟\n<i>يحتاج موافقة الإدارة</i>`;
-  return send(cid,txt,{reply_markup:ik([[b('✅ نشر','ap_publish'),b('❌ إلغاء','cancel')]])});
-}
-
-async function finalizeProduct(cid,mid,uid) {
-  const st=await getState(uid);
-  if(!st.name) return;
-  const pu=await getUser(uid);
-  const prodId=genId();
-  const catKey=st.catKey||st.category||'other';
-  const prod={
-    id:prodId,catKey,category:catKey,
-    isService:!!st.isService,serviceType:st.serviceType||null,
-    condition:st.condition,name:st.name,description:st.description,
-    price:parseFloat(st.price),city:st.city||'',
-    photos:st.photos||[],
-    sellerName:pu.firstName||'بائع',sellerUsername:pu.username||null,
-    sellerId:uid,storeId:null,
-    status:'pending',views:0,saves:0,createdAt:Date.now(),
+// ==================== لوحة المفاتيح الرئيسية ====================
+function mainKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        { text: '🏪 المتاجر', callback_data: 'menu_stores' },
+        { text: '🛒 السوق', callback_data: 'menu_market' }
+      ],
+      [
+        { text: '🔧 الخدمات', callback_data: 'menu_services' },
+        { text: '🍽️ المطاعم', callback_data: 'menu_restaurants' }
+      ],
+      [
+        { text: '⭐ المنتجات المميزة', callback_data: 'menu_featured' },
+        { text: '🎁 العروض', callback_data: 'menu_offers' }
+      ],
+      [
+        { text: '📢 أضف إعلان', callback_data: 'menu_addad' },
+        { text: '👤 حسابي', callback_data: 'menu_account' }
+      ],
+      [
+        { text: '🔍 بحث', callback_data: 'menu_search' },
+        { text: '🗂️ التصانيف المتاحة', callback_data: 'menu_all_cats' }
+      ]
+    ]
   };
-  // ربط بمتجر إذا كان لديه
-  const myStores=await getList(`user:${uid}:stores`);
-  if(myStores.length){
-    prod.storeId=myStores[0];
-    const s=await getStore(myStores[0]);
-    if(s){s.products=[prodId,...(s.products||[])];await saveStore(myStores[0],s);}
-  }
-  await saveProd(prodId,prod);
-  await listAdd('pending:products',prodId);
-  await listAdd(`user:${uid}:prods`,prodId);
-  await clearState(uid);
-  // إشعار الإدارة
-  await notify(OWNER_ID,`⏳ <b>منتج جديد بانتظار الموافقة</b>\n\n📦 ${prod.name}\n💰 ${prod.price}₪\n👤 ${prod.sellerName}\n🆔 ${uid}`);
-  const admins=await getList('admins:list');
-  for(const aid of admins){try{await notify(aid,`⏳ منتج جديد: ${prod.name}`);}catch{}}
-  return send(cid,`✅ <b>تم إرسال إعلانك!</b>\n\n📦 ${prod.name}\n\nسيظهر بعد موافقة الإدارة ⏳`,{
-    reply_markup:ik([[b('📦 إعلاناتي','my_listings')],[b('➕ إضافة آخر','add')],[b('🏠 رئيسية','main')]])
-  });
 }
 
-async function finalizeStore(cid,mid,uid,city) {
-  const st=await getState(uid);
-  const pu=await getUser(uid);
-  const storeId=genId();
-  const isRest=st.storeType==='restaurant'||st.category==='restaurant';
-  const store={
-    id:storeId,type:isRest?'restaurant':'store',
-    name:st.name,description:st.desc||'—',
-    category:st.category||'other',city,
-    hours:st.hours||'—',username:pu.username,
-    products:[],subscription:pu.subscription||'free',
-    ownerId:uid,createdAt:Date.now(),
-  };
-  await saveStore(storeId,store);
-  await listAdd('stores:all',storeId);
-  if(isRest) await listAdd('restaurants:all',storeId);
-  await listAdd(`user:${uid}:stores`,storeId);
-  await clearState(uid);
-  return send(cid,`🎉 <b>تم إنشاء ${isRest?'مطعمك':'متجرك'} بنجاح!</b>\n\n🏪 ${store.name}\n📍 ${city}`,{
-    reply_markup:ik([[b('🏪 عرض المتجر',`store:${storeId}`)],[b('➕ أضف منتجاً','add')],[b('🏠 رئيسية','main')]])
-  });
+function backToMainBtn() {
+  return [[{ text: '🏠 القائمة الرئيسية', callback_data: 'main_menu' }]];
 }
 
-// ═══════════════════════════════════════════════════════
-// Message Handler
-// ═══════════════════════════════════════════════════════
-async function onMessage(update) {
-  const msg=update.message;
-  if(!msg) return;
-  const cid=msg.chat.id, uid=msg.from.id, txt=msg.text||'';
+// ==================== معالج الرسائل ====================
+async function handleMessage(msg, env) {
+  const userId = msg.from.id;
+  const chatId = msg.chat.id;
+  const text = msg.text || '';
+  const state = await getState(env, userId);
 
-  const u=await getUser(uid);
-  if(u.firstName!==msg.from.first_name||u.username!==msg.from.username){
-    u.firstName=msg.from.first_name; u.username=msg.from.username;
-    await saveUser(uid,u);
+  // أمر البداية
+  if (text === '/start') {
+    await clearState(env, userId);
+    return sendMessage(chatId,
+      `🇵🇸 <b>أهلاً وسهلاً في سوق فلسطين!</b>\n\n` +
+      `🌿 منصتك التجارية الأولى لدعم الاقتصاد الفلسطيني\n\n` +
+      `اختر من القائمة أدناه:`,
+      { reply_markup: mainKeyboard() }
+    );
   }
 
-  // /start
-  if(txt.startsWith('/start')){
-    await clearState(uid);
-    const param=txt.split(' ')[1];
-    if(param?.startsWith('p_')){await showMain(cid,null,u);return showProduct(cid,param.slice(2),uid,null);}
-    return showMain(cid,null,u);
+  // أمر الأدمن
+  if (text === '/admin') {
+    const admin = await isAdmin(env, userId);
+    if (!admin) return sendMessage(chatId, '❌ ليس لديك صلاحية للوصول إلى لوحة التحكم.');
+    return showAdminPanel(chatId, env);
   }
 
-  // /myid للجميع
-  if(txt==='/myid'||txt.startsWith('/myid')){
-    return send(cid,`🆔 معرفك: <code>${uid}</code>`);
-  }
-
-  // أوامر الإدارة
-  if(isAdmin(u)){
-    if(txt.startsWith('/setsub ')){
-      const [,tid,plan]=txt.split(' ');
-      if(tid&&PLANS[plan]){
-        const tu=await getUser(tid);tu.subscription=plan;await saveUser(tid,tu);
-        const myStores=await getList(`user:${tid}:stores`);
-        for(const sid of myStores){const s=await getStore(sid);if(s){s.subscription=plan;await saveStore(sid,s);}}
-        try{await notify(parseInt(tid),`🎉 تم ترقية اشتراكك إلى ${PLANS[plan].name} ${PLANS[plan].badge}`);}catch{}
-        return send(cid,`✅ تم تعيين اشتراك ${tid} إلى ${PLANS[plan].name}`);
-      }
-      return send(cid,'⚠️ /setsub [أيدي] [free|pro|business]');
-    }
-    if(txt.startsWith('/setmod ')){
-      const [,tid,role]=txt.split(' ');
-      if(tid){
-        const tu=await getUser(tid);
-        tu.adminRole=role==='remove'?null:(['admin','moderator'].includes(role)?role:null);
-        await saveUser(tid,tu);
-        // تحديث قائمة الأدمنية
-        if(tu.adminRole){
-          await listAdd('admins:list',parseInt(tid));
-          await notify(parseInt(tid),`✅ تم تعيينك كـ ${tu.adminRole==='admin'?'مدير':'مشرف'} في سوقنا 🏪`);
-        } else {
-          await listRm('admins:list',parseInt(tid));
-        }
-        return send(cid,'✅ تم');
-      }
-    }
-    if(txt.startsWith('/stats')){
-      const [p,s,r,pend]=await Promise.all([
-        getList('products:all').then(l=>l.length),
-        getList('stores:all').then(l=>l.length),
-        getList('reports:all').then(l=>l.length),
-        getList('pending:products').then(l=>l.length),
-      ]);
-      return send(cid,`📊 <b>سوقنا — الإحصائيات</b>\n\n📦 المنتجات: ${p} (⏳ ${pend})\n🏪 المتاجر: ${s}\n🚩 البلاغات: ${r}`);
-    }
-    if(txt.startsWith('/broadcast ')){
-      const msg2=txt.slice(11);
-      const users=await getList('users:all');
-      let sent=0;
-      for(const uid2 of users){try{await notify(uid2,`📢 ${msg2}`);sent++;}catch{}}
-      return send(cid,`📢 تم الإرسال لـ ${sent} مستخدم.`);
-    }
-    if(txt.startsWith('/addoffer ')){
-      const pid=txt.slice(10).trim();
-      const p=await getProd(pid);
-      if(p&&p.status==='approved'){await listAdd('offers:all',pid);return send(cid,`🔥 تم إضافة: ${p.name}`);}
-      return send(cid,'⚠️ لم يُعثر على المنتج.');
-    }
-    if(txt.startsWith('/addfeat ')){
-      const pid=txt.slice(9).trim();
-      const p=await getProd(pid);
-      if(p&&p.status==='approved'){await listAdd('featured',pid);return send(cid,`⭐ تم تمييز: ${p.name}`);}
-      return send(cid,'⚠️ لم يُعثر على المنتج.');
-    }
-  }
-
-  // State machine
-  const st=await getState(uid);
-  if(!st?.step) return showMain(cid,null,u);
-
-  // ── صور المنتج ────────────────────────────────────────
-  if(st.step==='ap_photos'&&msg.photo){
-    const photos=st.photos||[];
-    if(photos.length<5){
-      photos.push(msg.photo[msg.photo.length-1].file_id);
-      await setState(uid,{...st,photos});
-      if(photos.length===5){
-        await setState(uid,{...st,photos,step:'ap_name'});
-        return send(cid,'✅ تم استلام 5 صور!\n\n📍 الخطوة 3/7 — اكتب اسم المنتج:',{reply_markup:ik([[b('❌ إلغاء','cancel')]])});
-      }
-      return send(cid,`✅ صورة ${photos.length}/5 — أرسل المزيد أو:`,{
-        reply_markup:ik([[b('✅ التالي','ap_next_name')],[b('❌ إلغاء','cancel')]])
-      });
-    }
+  // معالجة حالات المحادثة
+  if (state.step) {
+    await handleConversationStep(msg, state, env);
     return;
   }
 
-  // ── بحث ──────────────────────────────────────────────
-  if(st.step==='search'){await clearState(uid);return doSearch(cid,txt);}
-
-  // ── تمييز/عروض (إدارة) ───────────────────────────────
-  if(st.step==='featuring'&&isAdmin(u)){
-    await clearState(uid);
-    const p=await getProd(txt.trim());
-    if(p&&p.status==='approved'){await listAdd('featured',p.id,50);return send(cid,`⭐ تم تمييز: <b>${p.name}</b>`,{reply_markup:ik([[b('🔙 الإدارة','admin')]])});}
-    return send(cid,'⚠️ لم يُعثر على المنتج أو لم تتم الموافقة عليه.');
-  }
-  if(st.step==='offering'&&isAdmin(u)){
-    await clearState(uid);
-    const p=await getProd(txt.trim());
-    if(p&&p.status==='approved'){await listAdd('offers:all',p.id,50);return send(cid,`🔥 تم إضافة: <b>${p.name}</b>`,{reply_markup:ik([[b('🔙 الإدارة','admin')]])});}
-    return send(cid,'⚠️ لم يُعثر على المنتج.');
-  }
-
-  // ── نص template الاشتراك ─────────────────────────────
-  if(st.step==='edit_sub_tmpl'&&isOwner(u)){
-    await kset('sub:template',txt);
-    await clearState(uid);
-    return send(cid,'✅ تم تحديث نص صفحة الاشتراك.',{reply_markup:ik([[b('🏠 رئيسية','main')]])});
-  }
-
-  // ── إضافة تصنيف للمنتجات ─────────────────────────────
-  if(st.step==='add_prod_cat'){
-    await clearState(uid);
-    const norm=normalizeAr(txt);
-    // تحقق من التشابه
-    const existing=[...FIXED_PROD_CATS,...await getList('prod_cats:custom')];
-    const similar=existing.find(c=>normalizeAr(c.name)===norm||normalizeAr(c.name).includes(norm));
-    if(similar){
-      return send(cid,`⚠️ هذا التصنيف موجود بالفعل: <b>${similar.name}</b>\n\nسيضاف منتجك فيه.`,{reply_markup:ik([[b('🛍️ السوق','market')]])});
-    }
-    if(txt.length>25) return send(cid,'⚠️ اسم التصنيف طويل جداً (أقصاه 25 حرف):');
-    const catId=genId();
-    const cats=await getList('prod_cats:custom');
-    cats.push({id:catId,name:txt});
-    await kset('prod_cats:custom',cats);
-    return send(cid,`✅ تم إضافة تصنيف "<b>${txt}</b>" للسوق!`,{reply_markup:ik([[b('🛍️ السوق','market')]])});
-  }
-
-  // ── تصنيف مخصص للمتجر ────────────────────────────────
-  if(st.step==='sc_custom_cat'){
-    const norm=normalizeAr(txt);
-    const existing=[...FIXED_STORE_CATS,...await getList('store_cats:custom')];
-    const similar=existing.find(c=>normalizeAr(c.name)===norm||normalizeAr(c.name).includes(norm));
-    let catId;
-    if(similar){
-      await send(cid,`⚠️ تم إضافة التصنيف هذا سابقاً — سيضاف متجرك فيه: <b>${similar.name}</b>`);
-      catId=similar.id||similar.id;
-    } else {
-      if(txt.length>25) return send(cid,'⚠️ اسم التصنيف طويل جداً (أقصاه 25 حرف):');
-      catId=`custom_${genId()}`;
-      const cats=await getList('store_cats:custom');
-      cats.push({id:catId,name:txt});
-      await kset('store_cats:custom',cats);
-    }
-    await setState(uid,{...st,step:'sc_hours',category:catId});
-    return send(cid,`✅ التصنيف: <b>${txt}</b>\n\nاكتب ساعات العمل أو تخطى:`,{
-      reply_markup:ik([[b('⏭️ تخطى','sc_skip_hours')],[b('❌ إلغاء','cancel')]])
-    });
-  }
-
-  // ── مدينة مخصصة (متجر) ───────────────────────────────
-  if(st.step==='sc_custom_city'){
-    const found=await findSimilarCity(txt);
-    if(found){
-      await send(cid,`✅ هذه فعلاً موجودة — تم إضافتها إلى المدينة: <b>${found}</b>`);
-      return finalizeStore(cid,null,uid,found);
-    }
-    // مدينة جديدة
-    await listAdd('cities:custom',txt);
-    return finalizeStore(cid,null,uid,txt);
-  }
-
-  // ── مدينة مخصصة (منتج) ───────────────────────────────
-  if(st.step==='ap_custom_city'){
-    const found=await findSimilarCity(txt);
-    if(found){
-      await send(cid,`✅ هذه فعلاً موجودة: <b>${found}</b>`);
-      return showProductConfirm(cid,null,uid,found);
-    }
-    await listAdd('cities:custom',txt);
-    return showProductConfirm(cid,null,uid,txt);
-  }
-
-  // ── خطوات إنشاء المتجر ────────────────────────────────
-  if(st.step==='sc_name'){
-    await setState(uid,{...st,step:'sc_desc',name:txt});
-    return send(cid,`✅ الاسم: <b>${txt}</b>\n\nاكتب وصف المتجر:`,{
-      reply_markup:ik([[b('⏭️ تخطى','sc_skip_desc')],[b('❌ إلغاء','cancel')]])
-    });
-  }
-  if(st.step==='sc_desc'){
-    await setState(uid,{...st,step:'sc_category',desc:txt});
-    return showStoreCatPicker(cid,uid);
-  }
-  if(st.step==='sc_skip_desc_txt'||data==='sc_skip_desc'){
-    const st2=await getState(uid);
-    await setState(uid,{...st2,step:'sc_category',desc:'—'});
-    return showStoreCatPicker(cid,uid);
-  }
-  if(st.step==='sc_hours'){
-    await setState(uid,{...st,step:'sc_city',hours:txt});
-    const cityRows=buildCityPicker('sc_city');
-    return send(cid,'📍 اختر مدينة المتجر:',{reply_markup:ik(cityRows)});
-  }
-
-  // ── خطوات إضافة منتج ─────────────────────────────────
-  if(st.step==='ap_name'){
-    await setState(uid,{...st,step:'ap_description',name:txt});
-    return send(cid,`✅ الاسم: <b>${txt}</b>\n\n📍 الخطوة 4/7 — اكتب وصف المنتج:`,{reply_markup:ik([[b('❌ إلغاء','cancel')]])});
-  }
-  if(st.step==='ap_description'){
-    await setState(uid,{...st,step:'ap_price',description:txt});
-    return send(cid,`✅ الوصف حُفظ\n\n📍 الخطوة 5/7 — اكتب السعر بالشيكل (₪):`,{reply_markup:ik([[b('❌ إلغاء','cancel')]])});
-  }
-  if(st.step==='ap_price'){
-    const price=parseFloat(txt.replace(/[^\d.]/g,''));
-    if(isNaN(price)||price<0) return send(cid,'⚠️ أدخل رقماً صحيحاً للسعر:');
-    await setState(uid,{...st,step:'ap_city',price});
-    const cityRows=buildCityPicker('ap_city');
-    return send(cid,`✅ السعر: <b>${price} ₪</b>\n\n📍 الخطوة 6/7 — اختر المدينة:`,{reply_markup:ik(cityRows)});
-  }
-
-  // ── تعديل وصف المتجر ─────────────────────────────────
-  if(st.step==='edit_store_desc'){
-    const s=await getStore(st.storeId);
-    if(s){const myStores=await getList(`user:${uid}:stores`);if(myStores.includes(st.storeId)||isAdmin(u)){s.description=txt;await saveStore(st.storeId,s);}}
-    await clearState(uid);
-    return send(cid,'✅ تم تحديث وصف المتجر.',{reply_markup:ik([[b('🏪 متجري','my_store')]])});
-  }
-
-  return showMain(cid,null,u);
+  // رسالة عادية بدون حالة
+  sendMessage(chatId, '👋 اضغط /start للبدء أو اختر من القائمة.', { reply_markup: mainKeyboard() });
 }
 
-// تسجيل المستخدمين لـ broadcast
-async function registerUser(uid) {
-  await listAdd('users:all',uid,10000);
-}
+// ==================== معالج Callback ====================
+async function handleCallbackQuery(cq, env) {
+  const userId = cq.from.id;
+  const chatId = cq.message.chat.id;
+  const msgId = cq.message.message_id;
+  const data = cq.data;
 
-// ═══════════════════════════════════════════════════════
-// Long Polling
-// ═══════════════════════════════════════════════════════
-async function processUpdate(update) {
-  try {
-    if(update.message?.from) await registerUser(update.message.from.id);
-    if(update.callback_query?.from) await registerUser(update.callback_query.from.id);
-    if(update.callback_query) await onCallback(update);
-    else if(update.message) await onMessage(update);
-  } catch(e) {
-    console.error('❌ خطأ:', e.message, e.stack?.split('\n')[1]||'');
+  await answerCallback(cq.id);
+
+  // القائمة الرئيسية
+  if (data === 'main_menu') {
+    await clearState(env, userId);
+    return editMessage(chatId, msgId,
+      `🇵🇸 <b>سوق فلسطين</b>\n\nاختر من القائمة أدناه:`,
+      { reply_markup: mainKeyboard() }
+    );
+  }
+
+  // ===== المتاجر =====
+  if (data === 'menu_stores') return showStoresMenu(chatId, msgId, env);
+  if (data === 'stores_available') return showAvailableStores(chatId, msgId, env, 0);
+  if (data.startsWith('stores_page_')) {
+    const page = parseInt(data.split('_')[2]);
+    return showAvailableStores(chatId, msgId, env, page);
+  }
+  if (data === 'stores_create') return startCreateStore(chatId, msgId, userId, env);
+  if (data.startsWith('store_view_')) {
+    const storeId = data.replace('store_view_', '');
+    return showStoreDetail(chatId, msgId, storeId, userId, env);
+  }
+  if (data.startsWith('store_products_')) {
+    const storeId = data.replace('store_products_', '');
+    return showStoreProducts(chatId, msgId, storeId, env, 0);
+  }
+  if (data.startsWith('store_prods_page_')) {
+    const [, , , storeId, page] = data.split('_');
+    return showStoreProducts(chatId, msgId, storeId, env, parseInt(page));
+  }
+  if (data.startsWith('store_report_')) {
+    const storeId = data.replace('store_report_', '');
+    return showReportConfirm(chatId, msgId, storeId, 'store');
+  }
+  if (data.startsWith('store_report_confirm_')) {
+    const storeId = data.replace('store_report_confirm_', '');
+    return handleStoreReport(chatId, msgId, storeId, userId, cq.from, env);
+  }
+  if (data.startsWith('store_delete_')) {
+    const storeId = data.replace('store_delete_', '');
+    return showDeleteStoreConfirm(chatId, msgId, storeId, userId, env);
+  }
+  if (data.startsWith('store_delete_confirm_')) {
+    const storeId = data.replace('store_delete_confirm_', '');
+    return handleDeleteStore(chatId, msgId, storeId, userId, env);
+  }
+  if (data.startsWith('store_save_')) {
+    const storeId = data.replace('store_save_', '');
+    return handleSaveStore(chatId, msgId, storeId, userId, env);
+  }
+  if (data.startsWith('store_edit_')) {
+    const storeId = data.replace('store_edit_', '');
+    return startEditStore(chatId, msgId, storeId, userId, env);
+  }
+  if (data.startsWith('store_stats_')) {
+    const storeId = data.replace('store_stats_', '');
+    return showStoreStats(chatId, msgId, storeId, userId, env);
+  }
+  if (data.startsWith('store_addproduct_')) {
+    const storeId = data.replace('store_addproduct_', '');
+    return startAddProduct(chatId, msgId, userId, storeId, 'market', env);
+  }
+
+  // تصانيف المتاجر
+  if (data.startsWith('storecat_select_')) {
+    const cat = decodeURIComponent(data.replace('storecat_select_', ''));
+    const state = await getState(env, userId);
+    if (state.step === 'store_category') {
+      state.data.category = cat;
+      state.step = null;
+      const storeId = await genId(env, 'store');
+      const store = {
+        id: storeId,
+        ownerId: userId,
+        ownerUsername: state.data.ownerUsername,
+        name: state.data.name,
+        description: state.data.description,
+        category: cat,
+        products: [],
+        views: 0,
+        createdAt: Date.now()
+      };
+      await saveStore(env, store);
+      const allStores = await getAllStores(env);
+      allStores.push(storeId);
+      await saveAllStores(env, allStores);
+      const user = await getUser(env, userId);
+      user.stores = user.stores || [];
+      user.stores.push(storeId);
+      await saveUser(env, user);
+      await clearState(env, userId);
+      return sendMessage(chatId,
+        `✅ <b>تم إنشاء متجرك بنجاح!</b>\n\n` +
+        `🏪 <b>الاسم:</b> ${store.name}\n` +
+        `📝 <b>الوصف:</b> ${store.description}\n` +
+        `🗂️ <b>التصنيف:</b> ${cat}\n\n` +
+        `يمكنك إدارة متجرك من قسم <b>حسابي ← متجري</b> 🎉`,
+        { reply_markup: { inline_keyboard: backToMainBtn() } }
+      );
+    }
+  }
+
+  // ===== السوق =====
+  if (data === 'menu_market') return showMarketMenu(chatId, msgId, env);
+  if (data.startsWith('market_cat_')) {
+    const cat = decodeURIComponent(data.replace('market_cat_', ''));
+    return showProductsByCategory(chatId, msgId, cat, env, 0);
+  }
+  if (data.startsWith('market_cat_page_')) {
+    const parts = data.split('|');
+    const cat = decodeURIComponent(parts[0].replace('market_cat_page_', ''));
+    const page = parseInt(parts[1]);
+    return showProductsByCategory(chatId, msgId, cat, env, page);
+  }
+  if (data === 'market_add_cat') return startAddMarketCategory(chatId, msgId, userId, env);
+  if (data === 'menu_all_cats') return showAllCategories(chatId, msgId, env);
+
+  // ===== المنتج =====
+  if (data.startsWith('product_view_')) {
+    const productId = data.replace('product_view_', '');
+    return showProductDetail(chatId, msgId, productId, userId, env);
+  }
+  if (data.startsWith('product_save_')) {
+    const productId = data.replace('product_save_', '');
+    return handleSaveProduct(chatId, msgId, productId, userId, env);
+  }
+  if (data.startsWith('product_report_')) {
+    const productId = data.replace('product_report_', '');
+    return showReportConfirm(chatId, msgId, productId, 'product');
+  }
+  if (data.startsWith('product_report_confirm_')) {
+    const productId = data.replace('product_report_confirm_', '');
+    return handleProductReport(chatId, msgId, productId, userId, cq.from, env);
+  }
+  if (data.startsWith('product_delete_')) {
+    const productId = data.replace('product_delete_', '');
+    return showDeleteProductConfirm(chatId, msgId, productId, userId, env);
+  }
+  if (data.startsWith('product_delete_confirm_')) {
+    const productId = data.replace('product_delete_confirm_', '');
+    return handleDeleteProduct(chatId, msgId, productId, userId, env);
+  }
+
+  // حالة الضغط على: ملابس/إلكترونيات... إلخ أثناء إضافة منتج
+  if (data.startsWith('prodcat_select_')) {
+    const cat = decodeURIComponent(data.replace('prodcat_select_', ''));
+    const state = await getState(env, userId);
+    if (state.step === 'product_category') {
+      state.data.category = cat;
+      state.step = 'product_condition';
+      await setState(env, userId, state);
+      return sendMessage(chatId,
+        `🗂️ <b>التصنيف:</b> ${cat}\n\nالخطوة 1 — حالة المنتج:`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✨ جديد', callback_data: 'prodcond_جديد' }, { text: '🔄 مستعمل', callback_data: 'prodcond_مستعمل' }, { text: '⚠️ معيب', callback_data: 'prodcond_معيب' }],
+              [{ text: '🔙 رجوع', callback_data: 'main_menu' }]
+            ]
+          }
+        }
+      );
+    }
+  }
+
+  // حالة المنتج
+  if (data.startsWith('prodcond_')) {
+    const condition = data.replace('prodcond_', '');
+    const state = await getState(env, userId);
+    if (state.step === 'product_condition') {
+      state.data.condition = condition;
+      state.step = 'product_photos';
+      await setState(env, userId, state);
+      return sendMessage(chatId,
+        `✅ <b>الحالة:</b> ${condition}\n\nالخطوة 2 — أرسل صوراً للمنتج:\n(يمكنك إرسال حتى 5 صور)`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '⏭️ تخطى الصور', callback_data: 'prodskip_photos' }],
+              [{ text: '🔙 رجوع', callback_data: 'main_menu' }]
+            ]
+          }
+        }
+      );
+    }
+  }
+
+  if (data === 'prodskip_photos') {
+    const state = await getState(env, userId);
+    if (state.step === 'product_photos') {
+      state.data.photos = [];
+      state.step = 'product_name';
+      await setState(env, userId, state);
+      return sendMessage(chatId, `📝 الخطوة 3 — اكتب <b>اسم المنتج</b>:`);
+    }
+  }
+
+  // المدن
+  if (data.startsWith('city_select_')) {
+    const city = decodeURIComponent(data.replace('city_select_', ''));
+    const state = await getState(env, userId);
+    if (state.step === 'product_city') {
+      state.data.city = city;
+      state.step = 'product_confirm';
+      await setState(env, userId, state);
+      return showProductConfirm(chatId, state.data, userId, env);
+    }
+  }
+  if (data === 'city_other') {
+    const state = await getState(env, userId);
+    state.step = 'product_city_other';
+    await setState(env, userId, state);
+    return sendMessage(chatId, `🏙️ اكتب اسم مدينتك:`);
+  }
+  if (data === 'product_publish') {
+    const state = await getState(env, userId);
+    if (state.step === 'product_confirm') {
+      return handlePublishProduct(chatId, userId, state.data, env);
+    }
+  }
+  if (data === 'product_cancel_publish') {
+    await clearState(env, userId);
+    return sendMessage(chatId, '❌ تم إلغاء نشر المنتج.', { reply_markup: { inline_keyboard: backToMainBtn() } });
+  }
+
+  // ===== الخدمات =====
+  if (data === 'menu_services') return showServicesMenu(chatId, msgId, env);
+  if (data.startsWith('service_cat_')) {
+    const cat = decodeURIComponent(data.replace('service_cat_', ''));
+    return showServicesByCategory(chatId, msgId, cat, env, 0);
+  }
+
+  // ===== المطاعم =====
+  if (data === 'menu_restaurants') return showRestaurantsMenu(chatId, msgId, env);
+
+  // ===== المميزة ==
+  if (data === 'menu_featured') return showFeaturedProducts(chatId, msgId, env);
+
+  // ===== العروض =====
+  if (data === 'menu_offers') return showOffers(chatId, msgId, env);
+
+  // ===== إضافة إعلان =====
+  if (data === 'menu_addad') return startAddAd(chatId, msgId, userId, env);
+
+  // ===== حسابي =====
+  if (data === 'menu_account') return showAccountMenu(chatId, msgId, userId, env);
+  if (data === 'account_orders') return showMyOrders(chatId, msgId, userId, env);
+  if (data === 'account_ads') return showMyAds(chatId, msgId, userId, env);
+  if (data === 'account_saved') return showSavedMenu(chatId, msgId, userId, env);
+  if (data === 'account_saved_stores') return showSavedStores(chatId, msgId, userId, env, 0);
+  if (data === 'account_saved_products') return showSavedProducts(chatId, msgId, userId, env, 0);
+  if (data === 'account_subscription') return showSubscription(chatId, msgId, userId, env);
+  if (data === 'account_mystore') return showMyStores(chatId, msgId, userId, env);
+  if (data.startsWith('mystore_manage_')) {
+    const storeId = data.replace('mystore_manage_', '');
+    return showMyStoreManage(chatId, msgId, storeId, userId, env);
+  }
+
+  // ===== بحث =====
+  if (data === 'menu_search') return startSearch(chatId, msgId, userId, env);
+
+  // ===== الأدمن =====
+  if (data === 'admin_panel') return showAdminPanel(chatId, env, msgId);
+  if (data === 'admin_reports') return showAdminReports(chatId, msgId, env);
+  if (data.startsWith('admin_report_delete_store_')) {
+    const storeId = data.replace('admin_report_delete_store_', '');
+    await deleteStore(env, storeId);
+    return editMessage(chatId, msgId, '✅ تم حذف المتجر المُبلَّغ عنه.', { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'admin_reports' }]] } });
+  }
+  if (data === 'admin_admins') return showAdminAdmins(chatId, msgId, env);
+  if (data === 'admin_add_admin') return startAddAdmin(chatId, msgId, userId, env);
+  if (data === 'admin_subscriptions') return showAdminSubscriptions(chatId, msgId, env);
+  if (data === 'admin_add_subscriber') return startAddSubscriber(chatId, msgId, userId, env);
+  if (data === 'admin_featured') return showAdminFeatured(chatId, msgId, env);
+  if (data === 'admin_add_featured') return startAddFeatured(chatId, msgId, userId, env);
+  if (data === 'admin_offers_manage') return showAdminOffers(chatId, msgId, env);
+  if (data === 'admin_add_offer') return startAddOffer(chatId, msgId, userId, env);
+  if (data === 'admin_change_sub_text') return startChangeSubText(chatId, msgId, userId, env);
+
+  // تصنيفات الأدمن
+  if (data.startsWith('admin_cat_view_')) {
+    const cat = decodeURIComponent(data.replace('admin_cat_view_', ''));
+    return showAdminCategoryDetail(chatId, msgId, cat, env);
+  }
+  if (data.startsWith('admin_cat_delete_')) {
+    const cat = decodeURIComponent(data.replace('admin_cat_delete_', ''));
+    return showAdminCatDeleteConfirm(chatId, msgId, cat, env);
+  }
+  if (data.startsWith('admin_cat_delete_confirm_')) {
+    const cat = decodeURIComponent(data.replace('admin_cat_delete_confirm_', ''));
+    return handleAdminDeleteCategory(chatId, msgId, cat, env);
+  }
+  if (data.startsWith('admin_cat_move_to_')) {
+    const parts = data.replace('admin_cat_move_to_', '').split('|');
+    const fromCat = decodeURIComponent(parts[0]);
+    const toCat = decodeURIComponent(parts[1]);
+    return handleMoveCategoryProducts(chatId, msgId, fromCat, toCat, env);
+  }
+  if (data.startsWith('admin_cat_move_select_')) {
+    const fromCat = decodeURIComponent(data.replace('admin_cat_move_select_', ''));
+    return showCatMoveTargets(chatId, msgId, fromCat, env);
   }
 }
 
-async function startPolling() {
-  await tg('deleteWebhook',{drop_pending_updates:false});
-  let offset=0;
-  console.log('✅ سوقنا — النسخة الجديدة تعمل! 🇵🇸');
-  console.log('📡 يستقبل الرسائل...\n');
-  while(true){
-    try{
-      const res=await tg('getUpdates',{offset,timeout:30,limit:100,allowed_updates:['message','callback_query']});
-      if(res.ok&&res.result?.length){
-        for(const upd of res.result){
-          offset=upd.update_id+1;
-          processUpdate(upd);
+// ==================== معالج خطوات المحادثة ====================
+async function handleConversationStep(msg, state, env) {
+  const userId = msg.from.id;
+  const chatId = msg.chat.id;
+  const text = msg.text || '';
+  const photo = msg.photo;
+
+  switch (state.step) {
+    // ===== إنشاء متجر =====
+    case 'store_name':
+      if (!text || text.length < 2) return sendMessage(chatId, '❌ الاسم قصير جداً، حاول مرة أخرى:');
+      state.data.name = text;
+      state.data.ownerUsername = msg.from.username ? '@' + msg.from.username : msg.from.first_name;
+      state.step = 'store_description';
+      await setState(env, userId, state);
+      return sendMessage(chatId, `✅ <b>الاسم:</b> ${text}\n\nالآن اكتب <b>وصف المتجر</b>:`);
+
+    case 'store_description':
+      if (!text || text.length < 5) return sendMessage(chatId, '❌ الوصف قصير جداً، اكتب وصفاً أوضح:');
+      state.data.description = text;
+      state.step = 'store_category';
+      await setState(env, userId, state);
+      return showStoreCategorySelection(chatId, env);
+
+    // ===== إضافة منتج =====
+    case 'product_photos':
+      if (photo) {
+        state.data.photos = state.data.photos || [];
+        const fileId = photo[photo.length - 1].file_id;
+        state.data.photos.push(fileId);
+        if (state.data.photos.length >= 5) {
+          state.step = 'product_name';
+          await setState(env, userId, state);
+          return sendMessage(chatId, `✅ تم حفظ ${state.data.photos.length} صور.\n\nاكتب <b>اسم المنتج</b>:`);
+        }
+        await setState(env, userId, state);
+        return sendMessage(chatId, `📸 تم حفظ الصورة (${state.data.photos.length}/5). أرسل المزيد أو اضغط تخطى.`, {
+          reply_markup: { inline_keyboard: [[{ text: '⏭️ تخطى والمتابعة', callback_data: 'prodskip_photos' }]] }
+        });
+      }
+      return sendMessage(chatId, '📸 أرسل صورة أو اضغط تخطى.', {
+        reply_markup: { inline_keyboard: [[{ text: '⏭️ تخطى الصور', callback_data: 'prodskip_photos' }]] }
+      });
+
+    case 'product_name':
+      if (!text || text.length < 2) return sendMessage(chatId, '❌ اكتب اسماً صحيحاً للمنتج:');
+      state.data.name = text;
+      state.step = 'product_description';
+      await setState(env, userId, state);
+      return sendMessage(chatId, `✅ <b>الاسم:</b> ${text}\n\naكتب <b>وصف المنتج</b>:`);
+
+    case 'product_description':
+      if (!text || text.length < 5) return sendMessage(chatId, '❌ الوصف قصير، أضف تفاصيل أكثر:');
+      state.data.description = text;
+      state.step = 'product_price';
+      await setState(env, userId, state);
+      return sendMessage(chatId, `✅ <b>الوصف:</b> ${text}\n\nاكتب <b>السعر بالشيكل (₪)</b>:\n(أرسل رقماً فقط)`);
+
+    case 'product_price':
+      const price = parseFloat(text);
+      if (isNaN(price) || price < 0) return sendMessage(chatId, '❌ أدخل رقماً صحيحاً للسعر:');
+      state.data.price = price;
+      state.step = 'product_city';
+      await setState(env, userId, state);
+      return showCitySelection(chatId);
+
+    case 'product_city_other': {
+      const existing = CITIES.find(c => categoriesMatch(c.replace(/^[\p{Emoji}\s]+/u, '').trim(), text));
+      if (existing) {
+        state.data.city = existing;
+        await sendMessage(chatId, `✅ هذه المدينة موجودة بالفعل، تمت إضافتها: ${existing}`);
+      } else {
+        state.data.city = text;
+      }
+      state.step = 'product_confirm';
+      await setState(env, userId, state);
+      return showProductConfirm(chatId, state.data, userId, env);
+    }
+
+    // ===== بحث =====
+    case 'search_query': {
+      await clearState(env, userId);
+      return handleSearch(chatId, text, env);
+    }
+
+    // ===== إضافة إعلان =====
+    case 'add_ad_text': {
+      state.data.adText = text;
+      state.step = 'add_ad_confirm';
+      await setState(env, userId, state);
+      return sendMessage(chatId,
+        `📢 <b>نص الإعلان:</b>\n${text}\n\nهل تريد نشره؟`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✅ نشر', callback_data: 'ad_publish_confirm' }, { text: '❌ إلغاء', callback_data: 'main_menu' }]
+            ]
+          }
+        }
+      );
+    }
+
+    // ===== إضافة مشرف =====
+    case 'admin_add_admin_id': {
+      const adminId = parseInt(text);
+      if (isNaN(adminId)) return sendMessage(chatId, '❌ أدخل ID صحيح (أرقام فقط):');
+      const admins = await getAdmins(env);
+      if (!admins.includes(adminId)) {
+        admins.push(adminId);
+        await kvSet(env, 'admins', admins);
+      }
+      await clearState(env, userId);
+      return sendMessage(chatId, `✅ تم إضافة المشرف <code>${adminId}</code> بنجاح!`, { reply_markup: { inline_keyboard: [[{ text: '🔙 لوحة التحكم', callback_data: 'admin_panel' }]] } });
+    }
+
+    // ===== إضافة مشترك =====
+    case 'admin_add_subscriber_id': {
+      const subId = parseInt(text);
+      if (isNaN(subId)) return sendMessage(chatId, '❌ أدخل ID صحيح:');
+      const user = await getUser(env, subId);
+      user.premium = true;
+      await saveUser(env, user);
+      await clearState(env, userId);
+      return sendMessage(chatId, `✅ تم ترقية المستخدم <code>${subId}</code> إلى الخطة المميزة!`, { reply_markup: { inline_keyboard: [[{ text: '🔙 لوحة التحكم', callback_data: 'admin_panel' }]] } });
+    }
+
+    // ===== إضافة منتج مميز =====
+    case 'admin_add_featured_id': {
+      const featured = await kvGet(env, 'featured_products') || [];
+      if (!featured.includes(text)) {
+        featured.push(text);
+        await kvSet(env, 'featured_products', featured);
+      }
+      await clearState(env, userId);
+      return sendMessage(chatId, `⭐ تم إضافة المنتج المميز!`, { reply_markup: { inline_keyboard: [[{ text: '🔙 لوحة التحكم', callback_data: 'admin_panel' }]] } });
+    }
+
+    // ===== إضافة عرض =====
+    case 'admin_add_offer_text': {
+      const offers = await kvGet(env, 'offers') || [];
+      offers.push({ text: text, createdAt: Date.now(), id: Date.now().toString() });
+      await kvSet(env, 'offers', offers);
+      await clearState(env, userId);
+      return sendMessage(chatId, `🎁 تم نشر العرض بنجاح!`, { reply_markup: { inline_keyboard: [[{ text: '🔙 لوحة التحكم', callback_data: 'admin_panel' }]] } });
+    }
+
+    // ===== تغيير نص الاشتراك =====
+    case 'admin_change_sub_text': {
+      await kvSetText(env, 'subscription_text', text);
+      await clearState(env, userId);
+      return sendMessage(chatId, `✅ تم تحديث نص الاشتراك!`, { reply_markup: { inline_keyboard: [[{ text: '🔙 لوحة التحكم', callback_data: 'admin_panel' }]] } });
+    }
+
+    // ===== إضافة تصنيف سوق =====
+    case 'market_add_category': {
+      const existing = await findMatchingCategory(env, 'market', text);
+      if (existing) {
+        await clearState(env, userId);
+        return sendMessage(chatId, `⚠️ هذا التصنيف موجود بالفعل: <b>${existing}</b>\n\nتم إضافة منتجك ضمنه.`, { reply_markup: { inline_keyboard: backToMainBtn() } });
+      }
+      await addMarketCategory(env, text);
+      await clearState(env, userId);
+      return sendMessage(chatId, `✅ تمت إضافة التصنيف <b>${text}</b> للسوق!`, { reply_markup: { inline_keyboard: backToMainBtn() } });
+    }
+
+    // ===== تعديل اسم المتجر =====
+    case 'store_edit_name': {
+      const store = await getStore(env, state.data.storeId);
+      if (!store || store.ownerId !== userId) {
+        await clearState(env, userId);
+        return sendMessage(chatId, '❌ لا يمكن تعديل هذا المتجر.');
+      }
+      store.name = text;
+      await saveStore(env, store);
+      await clearState(env, userId);
+      return sendMessage(chatId, `✅ تم تحديث اسم المتجر إلى: <b>${text}</b>`, { reply_markup: { inline_keyboard: backToMainBtn() } });
+    }
+    case 'store_edit_desc': {
+      const store = await getStore(env, state.data.storeId);
+      if (!store || store.ownerId !== userId) {
+        await clearState(env, userId);
+        return sendMessage(chatId, '❌ لا يمكن تعديل هذا المتجر.');
+      }
+      store.description = text;
+      await saveStore(env, store);
+      await clearState(env, userId);
+      return sendMessage(chatId, `✅ تم تحديث وصف المتجر!`, { reply_markup: { inline_keyboard: backToMainBtn() } });
+    }
+  }
+
+  // callback_query في handleCallbackQuery
+  if (state.step === 'add_ad_confirm') {
+    if (text === 'نشر') {
+      const user = await getUser(env, userId);
+      user.ads = user.ads || [];
+      user.ads.push({ text: state.data.adText, createdAt: Date.now() });
+      await saveUser(env, user);
+      await clearState(env, userId);
+      return sendMessage(chatId, `✅ تم نشر إعلانك!`, { reply_markup: { inline_keyboard: backToMainBtn() } });
+    }
+  }
+}
+
+// ==================== واجهة المتاجر ====================
+async function showStoresMenu(chatId, msgId, env) {
+  return editMessage(chatId, msgId,
+    `🏪 <b>المتاجر</b>\n\nاستعرض المتاجر المتاحة أو أنشئ متجرك الخاص!`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🏬 المتاجر المتاحة', callback_data: 'stores_available' }],
+          [{ text: '➕ أنشئ متجرك', callback_data: 'stores_create' }],
+          [{ text: '🏠 القائمة الرئيسية', callback_data: 'main_menu' }]
+        ]
+      }
+    }
+  );
+}
+
+async function showAvailableStores(chatId, msgId, env, page) {
+  const allStoreIds = await getAllStores(env);
+  const pageSize = 20;
+  const start = page * pageSize;
+  const pageIds = allStoreIds.slice(start, start + pageSize);
+
+  if (allStoreIds.length === 0) {
+    return editMessage(chatId, msgId,
+      `🏪 <b>المتاجر المتاحة</b>\n\n😔 لا توجد متاجر بعد. كن أول من يضيف متجره!`,
+      { reply_markup: { inline_keyboard: [[{ text: '➕ أنشئ متجرك', callback_data: 'stores_create' }], ...backToMainBtn()] } }
+    );
+  }
+
+  const buttons = [];
+  for (const storeId of pageIds) {
+    const store = await getStore(env, storeId);
+    if (store) buttons.push([{ text: `🏪 ${store.name} | ${store.category}`, callback_data: `store_view_${store.id}` }]);
+  }
+
+  const nav = [];
+  if (page > 0) nav.push({ text: '⬅️ السابق', callback_data: `stores_page_${page - 1}` });
+  if (start + pageSize < allStoreIds.length) nav.push({ text: 'التالي ➡️', callback_data: `stores_page_${page + 1}` });
+  if (nav.length > 0) buttons.push(nav);
+  buttons.push([{ text: '🔙 رجوع', callback_data: 'menu_stores' }]);
+
+  return editMessage(chatId, msgId,
+    `🏬 <b>المتاجر المتاحة</b> (${allStoreIds.length} متجر)\nالصفحة ${page + 1}:`,
+    { reply_markup: { inline_keyboard: buttons } }
+  );
+}
+
+async function showStoreDetail(chatId, msgId, storeId, userId, env) {
+  const store = await getStore(env, storeId);
+  if (!store) return editMessage(chatId, msgId, '❌ المتجر غير موجود.');
+
+  store.views = (store.views || 0) + 1;
+  await saveStore(env, store);
+
+  const admin = await isAdmin(env, userId);
+  const isOwner = store.ownerId === userId;
+
+  const text =
+    `🏪 <b>${store.name}</b>\n\n` +
+    `📝 ${store.description}\n\n` +
+    `🗂️ <b>التصنيف:</b> ${store.category}\n` +
+    `👀 <b>المشاهدات:</b> ${store.views}\n` +
+    `📅 <b>تاريخ الإنشاء:</b> ${new Date(store.createdAt).toLocaleDateString('ar-PS')}`;
+
+  const buttons = [
+    [{ text: '💬 تواصل مع المتجر', url: `tg://user?id=${store.ownerId}` }],
+    [{ text: '🛍️ عرض منتجات المتجر', callback_data: `store_products_${storeId}` }],
+    [{ text: '🔖 حفظ المتجر', callback_data: `store_save_${storeId}` }],
+    [{ text: '🚨 تبليغ', callback_data: `store_report_${storeId}` }]
+  ];
+  if (admin || isOwner) {
+    buttons.push([{ text: '🗑️ حذف المتجر', callback_data: `store_delete_${storeId}` }]);
+  }
+  buttons.push([{ text: '🔙 رجوع', callback_data: 'stores_available' }]);
+
+  return editMessage(chatId, msgId, text, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function startCreateStore(chatId, msgId, userId, env) {
+  const user = await getUser(env, userId);
+  const userStores = user.stores || [];
+  const maxStores = user.premium ? 999 : 2;
+  if (userStores.length >= maxStores) {
+    return editMessage(chatId, msgId,
+      `⚠️ <b>لقد وصلت للحد الأقصى من المتاجر!</b>\n\nالخطة المجانية تسمح بـ 2 متاجر فقط.\n\nللحصول على مزيد من المتاجر، اشترك في الخطة المميزة ✨`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⭐ الاشتراك المميز', callback_data: 'account_subscription' }],
+            [{ text: '🔙 رجوع', callback_data: 'menu_stores' }]
+          ]
         }
       }
-    } catch(e){
-      console.error('polling error:',e.message);
-      await new Promise(r=>setTimeout(r,3000));
-    }
+    );
   }
+  await setState(env, userId, { step: 'store_name', data: {} });
+  return editMessage(chatId, msgId,
+    `🏪 <b>إنشاء متجر</b>\n\n` +
+    `مرحباً! دعنا ننشئ متجرك خطوة بخطوة.\n\n` +
+    `<b>الخطوة 1 — اكتب اسم المتجر:</b>`
+  );
 }
 
-startPolling();
+async function showStoreCategorySelection(chatId, env) {
+  const cats = await getStoreCategories(env);
+  const buttons = cats.map(cat => [{ text: cat, callback_data: `storecat_select_${encodeURIComponent(cat)}` }]);
+  buttons.push([{ text: '🔤 أخرى (حدد بنفسك)', callback_data: 'storecat_select_' + encodeURIComponent('🏷️ أخرى') }]);
+  return sendMessage(chatId,
+    `🗂️ <b>اختر تصنيف المتجر:</b>`,
+    { reply_markup: { inline_keyboard: buttons } }
+  );
+}
+
+async function showStoreProducts(chatId, msgId, storeId, env, page) {
+  const store = await getStore(env, storeId);
+  if (!store) return editMessage(chatId, msgId, '❌ المتجر غير موجود.');
+  const allProducts = await getAllProducts(env);
+  const storeProducts = [];
+  for (const pId of allProducts) {
+    const p = await getProduct(env, pId);
+    if (p && p.storeId === storeId) storeProducts.push(p);
+  }
+  if (storeProducts.length === 0) {
+    return editMessage(chatId, msgId, `🛍️ <b>منتجات ${store.name}</b>\n\n😔 لا توجد منتجات في هذا المتجر بعد.`, { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: `store_view_${storeId}` }]] } });
+  }
+  const pageSize = 20;
+  const start = page * pageSize;
+  const pageProds = storeProducts.slice(start, start + pageSize);
+  const buttons = pageProds.map(p => [{ text: `🛍️ ${p.name} — ${p.price}₪`, callback_data: `product_view_${p.id}` }]);
+  const nav = [];
+  if (page > 0) nav.push({ text: '⬅️ السابق', callback_data: `store_prods_page_${storeId}_${page - 1}` });
+  if (start + pageSize < storeProducts.length) nav.push({ text: 'التالي ➡️', callback_data: `store_prods_page_${storeId}_${page + 1}` });
+  if (nav.length > 0) buttons.push(nav);
+  buttons.push([{ text: '🔙 رجوع', callback_data: `store_view_${storeId}` }]);
+  return editMessage(chatId, msgId, `🛍️ <b>منتجات ${store.name}</b> (${storeProducts.length} منتج):`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function showReportConfirm(chatId, msgId, itemId, type) {
+  const typeText = type === 'store' ? 'المتجر' : 'المنتج';
+  return editMessage(chatId, msgId,
+    `🚨 <b>هل أنت متأكد من التبليغ عن هذا ${typeText}؟</b>`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '✅ نعم', callback_data: `${type}_report_confirm_${itemId}` },
+            { text: '❌ لا', callback_data: type === 'store' ? `store_view_${itemId}` : `product_view_${itemId}` }
+          ]
+        ]
+      }
+    }
+  );
+}
+
+async function handleStoreReport(chatId, msgId, storeId, userId, from, env) {
+  const store = await getStore(env, storeId);
+  if (!store) return editMessage(chatId, msgId, '❌ المتجر غير موجود.');
+  const reports = await kvGet(env, 'reports') || [];
+  reports.push({
+    type: 'store',
+    itemId: storeId,
+    storeName: store.name,
+    storeInfo: store,
+    reporterId: userId,
+    reporterUsername: from.username ? '@' + from.username : from.first_name,
+    createdAt: Date.now()
+  });
+  await kvSet(env, 'reports', reports);
+  const reportMsg =
+    `🚨 <b>بلاغ جديد عن متجر!</b>\n\n` +
+    `🏪 <b>المتجر:</b> ${store.name}\n` +
+    `🆔 <b>ID المتجر:</b> <code>${storeId}</code>\n` +
+    `👤 <b>المُبلِّغ:</b> ${from.username ? '@' + from.username : from.first_name}\n` +
+    `🆔 <b>ID المُبلِّغ:</b> <code>${userId}</code>\n` +
+    `📅 <b>الوقت:</b> ${new Date().toLocaleString('ar-PS')}`;
+  await sendMessage(OWNER_ID, reportMsg, {
+    reply_markup: { inline_keyboard: [[{ text: '🗑️ حذف المتجر', callback_data: `store_delete_${storeId}` }]] }
+  });
+  return editMessage(chatId, msgId, '✅ <b>تم إرسال بلاغك بنجاح!</b>\n\nشكراً على حرصك على جودة المنصة 🙏', { reply_markup: { inline_keyboard: backToMainBtn() } });
+}
+
+async function showDeleteStoreConfirm(chatId, msgId, storeId, userId, env) {
+  const admin = await isAdmin(env, userId);
+  const store = await getStore(env, storeId);
+  if (!store) return editMessage(chatId, msgId, '❌ المتجر غير موجود.');
+  if (!admin && store.ownerId !== userId) return editMessage(chatId, msgId, '❌ ليس لديك صلاحية لحذف هذا المتجر.');
+  return editMessage(chatId, msgId,
+    `🗑️ <b>هل أنت متأكد من حذف المتجر "${store.name}"؟</b>\n\n⚠️ سيتم حذف جميع بيانات المتجر نهائياً!`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '✅ نعم، احذف', callback_data: `store_delete_confirm_${storeId}` },
+            { text: '❌ لا', callback_data: `store_view_${storeId}` }
+          ]
+        ]
+      }
+    }
+  );
+}
+
+async function handleDeleteStore(chatId, msgId, storeId, userId, env) {
+  const admin = await isAdmin(env, userId);
+  const store = await getStore(env, storeId);
+  if (!store) return editMessage(chatId, msgId, '❌ المتجر غير موجود.');
+  if (!admin && store.ownerId !== userId) return editMessage(chatId, msgId, '❌ ليس لديك صلاحية.');
+  await deleteStore(env, storeId);
+  const owner = await getUser(env, store.ownerId);
+  owner.stores = (owner.stores || []).filter(id => id !== storeId);
+  await saveUser(env, owner);
+  return editMessage(chatId, msgId, `✅ <b>تم حذف المتجر "${store.name}" بنجاح!</b>`, { reply_markup: { inline_keyboard: backToMainBtn() } });
+}
+
+async function handleSaveStore(chatId, msgId, storeId, userId, env) {
+  const user = await getUser(env, userId);
+  user.saved_stores = user.saved_stores || [];
+  if (user.saved_stores.includes(storeId)) {
+    user.saved_stores = user.saved_stores.filter(id => id !== storeId);
+    await saveUser(env, user);
+    return editMessage(chatId, msgId, '🔖 تم إزالة المتجر من المحفوظات.', { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: `store_view_${storeId}` }]] } });
+  }
+  user.saved_stores.push(storeId);
+  await saveUser(env, user);
+  return editMessage(chatId, msgId, '✅ تم حفظ المتجر في محفوظاتك! 🔖', { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: `store_view_${storeId}` }]] } });
+}
+
+async function startEditStore(chatId, msgId, storeId, userId, env) {
+  const store = await getStore(env, storeId);
+  if (!store || store.ownerId !== userId) return editMessage(chatId, msgId, '❌ ليس لديك صلاحية تعديل هذا المتجر.');
+  return editMessage(chatId, msgId,
+    `✏️ <b>تعديل المتجر: ${store.name}</b>\n\nماذا تريد تعديله؟`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '✏️ تعديل الاسم', callback_data: `store_edit_name_${storeId}` }],
+          [{ text: '📝 تعديل الوصف', callback_data: `store_edit_desc_${storeId}` }],
+          [{ text: '🔙 رجوع', callback_data: `mystore_manage_${storeId}` }]
+        ]
+      }
+    }
+  );
+}
+
+async function showStoreStats(chatId, msgId, storeId, userId, env) {
+  const store = await getStore(env, storeId);
+  if (!store || store.ownerId !== userId) return editMessage(chatId, msgId, '❌ ليس لديك صلاحية.');
+  const allProducts = await getAllProducts(env);
+  let storeProductCount = 0;
+  for (const pId of allProducts) {
+    const p = await getProduct(env, pId);
+    if (p && p.storeId === storeId) storeProductCount++;
+  }
+  return editMessage(chatId, msgId,
+    `📊 <b>إحصائيات متجرك: ${store.name}</b>\n\n` +
+    `👀 <b>إجمالي المشاهدات:</b> ${store.views || 0}\n` +
+    `🛍️ <b>عدد المنتجات:</b> ${storeProductCount}\n` +
+    `📅 <b>تاريخ الإنشاء:</b> ${new Date(store.createdAt).toLocaleDateString('ar-PS')}`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: `mystore_manage_${storeId}` }]] } }
+  );
+}
+
+// ==================== واجهة السوق ====================
+async function showMarketMenu(chatId, msgId, env) {
+  const cats = await getMarketCategories(env);
+  const buttons = cats.map(cat => [{ text: cat, callback_data: `market_cat_${encodeURIComponent(cat)}` }]);
+  buttons.push([{ text: '🗂️ التصنيفات المتاحة', callback_data: 'menu_all_cats' }]);
+  buttons.push([{ text: '➕ إضافة تصنيف', callback_data: 'market_add_cat' }]);
+  buttons.push([{ text: '🏠 القائمة الرئيسية', callback_data: 'main_menu' }]);
+  return editMessage(chatId, msgId, `🛒 <b>السوق</b>\n\nاختر تصنيفاً:`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function showProductsByCategory(chatId, msgId, cat, env, page) {
+  const allProducts = await getAllProducts(env);
+  const catProducts = [];
+  for (const pId of allProducts) {
+    const p = await getProduct(env, pId);
+    if (p && p.category === cat && p.type !== 'service') catProducts.push(p);
+  }
+  if (catProducts.length === 0) {
+    return editMessage(chatId, msgId,
+      `${cat}\n\n😔 لا توجد منتجات في هذا التصنيف بعد.\n\nكن أول من يضيف منتجاً! 🎉`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '➕ إضافة منتج', callback_data: `prodcat_select_${encodeURIComponent(cat)}` }],
+            [{ text: '🔙 رجوع', callback_data: 'menu_market' }]
+          ]
+        }
+      }
+    );
+  }
+  const pageSize = 20;
+  const start = page * pageSize;
+  const pageProds = catProducts.slice(start, start + pageSize);
+  const buttons = [
+    [{ text: '➕ إضافة منتج', callback_data: `prodcat_select_${encodeURIComponent(cat)}` }],
+    ...pageProds.map(p => [{ text: `🛍️ ${p.name} — ${p.price}₪ | ${p.condition}`, callback_data: `product_view_${p.id}` }])
+  ];
+  const nav = [];
+  if (page > 0) nav.push({ text: '⬅️ السابق', callback_data: `market_cat_page_${encodeURIComponent(cat)}|${page - 1}` });
+  if (start + pageSize < catProducts.length) nav.push({ text: 'التالي ➡️', callback_data: `market_cat_page_${encodeURIComponent(cat)}|${page + 1}` });
+  if (nav.length > 0) buttons.push(nav);
+  buttons.push([{ text: '🔙 رجوع', callback_data: 'menu_market' }]);
+  return editMessage(chatId, msgId, `${cat} (${catProducts.length} منتج) — الصفحة ${page + 1}:`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function startAddMarketCategory(chatId, msgId, userId, env) {
+  await setState(env, userId, { step: 'market_add_category', data: {} });
+  return editMessage(chatId, msgId,
+    `➕ <b>إضافة تصنيف جديد</b>\n\nاكتب اسم التصنيف الجديد:`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'menu_market' }]] } }
+  );
+}
+
+async function showAllCategories(chatId, msgId, env) {
+  const marketCats = await getMarketCategories(env);
+  const storeCats = await getStoreCategories(env);
+  const admin = await isAdmin(env, OWNER_ID);
+  let text = `🗂️ <b>جميع التصنيفات المتاحة</b>\n\n`;
+  text += `<b>🛒 تصنيفات السوق:</b>\n${marketCats.map(c => `• ${c}`).join('\n')}\n\n`;
+  text += `<b>🏪 تصنيفات المتاجر:</b>\n${storeCats.map(c => `• ${c}`).join('\n')}`;
+  const buttons = [];
+  buttons.push([{ text: '🔙 رجوع', callback_data: 'main_menu' }]);
+  return editMessage(chatId, msgId, text, { reply_markup: { inline_keyboard: buttons } });
+}
+
+// ==================== تفاصيل المنتج ====================
+async function startAddProduct(chatId, msgId, userId, storeId, type, env) {
+  const cats = type === 'service' ? ['💼 تقنية ومعلوماتية', '🎨 تصميم وإبداع', '🔧 صيانة وإصلاح', '📚 تعليم ودروس', '🚚 توصيل ونقل', '💇 صحة وجمال', '📸 تصوير وفيديو', '📋 أعمال واستشارات'] : await getMarketCategories(env);
+  const buttons = cats.map(cat => [{ text: cat, callback_data: `prodcat_select_${encodeURIComponent(cat)}` }]);
+  buttons.push([{ text: '🔙 رجوع', callback_data: 'main_menu' }]);
+  await setState(env, userId, { step: 'product_category', data: { storeId, type: type || 'market' } });
+  if (msgId) {
+    return editMessage(chatId, msgId, `🗂️ <b>اختر تصنيف المنتج:</b>`, { reply_markup: { inline_keyboard: buttons } });
+  }
+  return sendMessage(chatId, `🗂️ <b>اختر تصنيف المنتج:</b>`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function showProductDetail(chatId, msgId, productId, userId, env) {
+  const product = await getProduct(env, productId);
+  if (!product) return editMessage(chatId, msgId, '❌ المنتج غير موجود أو تم حذفه.');
+  const admin = await isAdmin(env, userId);
+  const isOwner = product.ownerId === userId;
+
+  const text =
+    `🛍️ <b>${product.name}</b>\n\n` +
+    `📝 ${product.description}\n\n` +
+    `💰 <b>السعر:</b> ${product.price}₪\n` +
+    `📦 <b>الحالة:</b> ${product.condition}\n` +
+    `🏙️ <b>المدينة:</b> ${product.city}\n` +
+    `🗂️ <b>التصنيف:</b> ${product.category}\n` +
+    `📅 <b>تاريخ النشر:</b> ${new Date(product.createdAt).toLocaleDateString('ar-PS')}`;
+
+  const buttons = [
+    [{ text: '💬 تواصل مع البائع', url: `tg://user?id=${product.ownerId}` }],
+    [{ text: '🔖 حفظ المنتج', callback_data: `product_save_${productId}` }],
+    [{ text: '🚨 تبليغ', callback_data: `product_report_${productId}` }]
+  ];
+  if (product.storeId) buttons.push([{ text: `🏪 زيارة المتجر`, callback_data: `store_view_${product.storeId}` }]);
+  if (admin || isOwner) buttons.push([{ text: '🗑️ حذف المنتج', callback_data: `product_delete_${productId}` }]);
+  buttons.push([{ text: '🔙 رجوع', callback_data: 'menu_market' }]);
+
+  if (product.photos && product.photos.length > 0) {
+    return callAPI('editMessageMedia', {
+      chat_id: chatId, message_id: msgId,
+      media: { type: 'photo', media: product.photos[0], caption: text, parse_mode: 'HTML' },
+      reply_markup: { inline_keyboard: buttons }
+    }).catch(() => editMessage(chatId, msgId, text, { reply_markup: { inline_keyboard: buttons } }));
+  }
+  return editMessage(chatId, msgId, text, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function handleSaveProduct(chatId, msgId, productId, userId, env) {
+  const user = await getUser(env, userId);
+  user.saved_products = user.saved_products || [];
+  if (user.saved_products.includes(productId)) {
+    user.saved_products = user.saved_products.filter(id => id !== productId);
+    await saveUser(env, user);
+    return editMessage(chatId, msgId, '🔖 تم إزالة المنتج من المحفوظات.', { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: `product_view_${productId}` }]] } });
+  }
+  user.saved_products.push(productId);
+  await saveUser(env, user);
+  return editMessage(chatId, msgId, '✅ تم حفظ المنتج في محفوظاتك! 🔖', { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: `product_view_${productId}` }]] } });
+}
+
+async function handleProductReport(chatId, msgId, productId, userId, from, env) {
+  const product = await getProduct(env, productId);
+  if (!product) return editMessage(chatId, msgId, '❌ المنتج غير موجود.');
+  const reports = await kvGet(env, 'reports') || [];
+  reports.push({ type: 'product', itemId: productId, productName: product.name, reporterId: userId, reporterUsername: from.username ? '@' + from.username : from.first_name, createdAt: Date.now() });
+  await kvSet(env, 'reports', reports);
+  await sendMessage(OWNER_ID,
+    `🚨 <b>بلاغ عن منتج!</b>\n🛍️ <b>المنتج:</b> ${product.name}\n🆔 <code>${productId}</code>\n👤 المُبلِّغ: ${from.username ? '@' + from.username : from.first_name} (<code>${userId}</code>)`,
+    { reply_markup: { inline_keyboard: [[{ text: '🗑️ حذف المنتج', callback_data: `product_delete_${productId}` }]] } }
+  );
+  return editMessage(chatId, msgId, '✅ <b>تم إرسال بلاغك بنجاح!</b> شكراً على حرصك 🙏', { reply_markup: { inline_keyboard: backToMainBtn() } });
+}
+
+async function showDeleteProductConfirm(chatId, msgId, productId, userId, env) {
+  const admin = await isAdmin(env, userId);
+  const product = await getProduct(env, productId);
+  if (!product) return editMessage(chatId, msgId, '❌ المنتج غير موجود.');
+  if (!admin && product.ownerId !== userId) return editMessage(chatId, msgId, '❌ ليس لديك صلاحية.');
+  return editMessage(chatId, msgId,
+    `🗑️ <b>هل أنت متأكد من حذف المنتج "${product.name}"؟</b>`,
+    { reply_markup: { inline_keyboard: [[{ text: '✅ نعم', callback_data: `product_delete_confirm_${productId}` }, { text: '❌ لا', callback_data: `product_view_${productId}` }]] } }
+  );
+}
+
+async function handleDeleteProduct(chatId, msgId, productId, userId, env) {
+  const admin = await isAdmin(env, userId);
+  const product = await getProduct(env, productId);
+  if (!product) return editMessage(chatId, msgId, '❌ المنتج غير موجود.');
+  if (!admin && product.ownerId !== userId) return editMessage(chatId, msgId, '❌ ليس لديك صلاحية.');
+  await deleteProduct(env, productId);
+  if (product.storeId) {
+    const store = await getStore(env, product.storeId);
+    if (store) {
+      store.products = (store.products || []).filter(id => id !== productId);
+      await saveStore(env, store);
+    }
+  }
+  const owner = await getUser(env, product.ownerId);
+  owner.products = (owner.products || []).filter(id => id !== productId);
+  await saveUser(env, owner);
+  return editMessage(chatId, msgId, `✅ تم حذف المنتج "${product.name}" بنجاح!`, { reply_markup: { inline_keyboard: backToMainBtn() } });
+}
+
+// ==================== اختيار المدينة ====================
+async function showCitySelection(chatId) {
+  const buttons = CITIES.map(city => [{ text: city, callback_data: `city_select_${encodeURIComponent(city)}` }]);
+  buttons.push([{ text: '🔤 مدينة أخرى', callback_data: 'city_other' }]);
+  return sendMessage(chatId, `🏙️ <b>اختر المدينة:</b>`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+// ==================== تأكيد نشر المنتج ====================
+async function showProductConfirm(chatId, data, userId, env) {
+  const text =
+    `📋 <b>مراجعة المنتج قبل النشر:</b>\n\n` +
+    `🛍️ <b>الاسم:</b> ${data.name}\n` +
+    `📝 <b>الوصف:</b> ${data.description}\n` +
+    `💰 <b>السعر:</b> ${data.price}₪\n` +
+    `📦 <b>الحالة:</b> ${data.condition}\n` +
+    `🏙️ <b>المدينة:</b> ${data.city}\n` +
+    `🗂️ <b>التصنيف:</b> ${data.category}\n` +
+    `📸 <b>الصور:</b> ${data.photos && data.photos.length > 0 ? data.photos.length + ' صور' : 'بدون صور'}`;
+  return sendMessage(chatId, text, {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🚀 نشر المنتج', callback_data: 'product_publish' }, { text: '❌ إلغاء', callback_data: 'product_cancel_publish' }]
+      ]
+    }
+  });
+}
+
+async function handlePublishProduct(chatId, userId, data, env) {
+  const productId = await genId(env, 'product');
+  const product = {
+    id: productId,
+    ownerId: userId,
+    storeId: data.storeId || null,
+    name: data.name,
+    description: data.description,
+    price: data.price,
+    condition: data.condition,
+    city: data.city,
+    category: data.category,
+    photos: data.photos || [],
+    type: data.type || 'market',
+    createdAt: Date.now()
+  };
+  await saveProduct(env, product);
+  const allProducts = await getAllProducts(env);
+  allProducts.push(productId);
+  await kvSet(env, 'all_products', allProducts);
+  const user = await getUser(env, userId);
+  user.products = user.products || [];
+  user.products.push(productId);
+  await saveUser(env, user);
+  if (data.storeId) {
+    const store = await getStore(env, data.storeId);
+    if (store) {
+      store.products = store.products || [];
+      store.products.push(productId);
+      await saveStore(env, store);
+    }
+  }
+  await clearState(env, userId);
+  return sendMessage(chatId,
+    `🎉 <b>تم نشر منتجك بنجاح!</b>\n\n` +
+    `🛍️ <b>${product.name}</b> — ${product.price}₪\n` +
+    `🗂️ ${product.category} | 🏙️ ${product.city}\n\n` +
+    `يمكنك إدارة منتجاتك من <b>حسابي ← إعلاناتي</b> ✅`,
+    { reply_markup: { inline_keyboard: backToMainBtn() } }
+  );
+}
+
+// ==================== الخدمات ====================
+async function showServicesMenu(chatId, msgId, env) {
+  const serviceCats = ['💼 تقنية ومعلوماتية', '🎨 تصميم وإبداع', '🔧 صيانة وإصلاح', '📚 تعليم ودروس', '🚚 توصيل ونقل', '💇 صحة وجمال', '📸 تصوير وفيديو', '📋 أعمال واستشارات'];
+  const buttons = serviceCats.map(cat => [{ text: cat, callback_data: `service_cat_${encodeURIComponent(cat)}` }]);
+  buttons.push([{ text: '🏠 القائمة الرئيسية', callback_data: 'main_menu' }]);
+  return editMessage(chatId, msgId, `🔧 <b>الخدمات</b>\n\nاختر تصنيف الخدمة:`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function showServicesByCategory(chatId, msgId, cat, env, page) {
+  const allProducts = await getAllProducts(env);
+  const services = [];
+  for (const pId of allProducts) {
+    const p = await getProduct(env, pId);
+    if (p && p.type === 'service' && p.category === cat) services.push(p);
+  }
+  if (services.length === 0) {
+    return editMessage(chatId, msgId,
+      `${cat}\n\n😔 لا توجد خدمات في هذا التصنيف بعد.`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '➕ أضف خدمتك', callback_data: `prodcat_select_${encodeURIComponent(cat)}` }],
+            [{ text: '🔙 رجوع', callback_data: 'menu_services' }]
+          ]
+        }
+      }
+    );
+  }
+  const buttons = services.map(s => [{ text: `🔧 ${s.name} — ${s.price}₪`, callback_data: `product_view_${s.id}` }]);
+  buttons.push([{ text: '🔙 رجوع', callback_data: 'menu_services' }]);
+  return editMessage(chatId, msgId, `${cat} (${services.length} خدمة):`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+// ==================== المطاعم ====================
+async function showRestaurantsMenu(chatId, msgId, env) {
+  const allStoreIds = await getAllStores(env);
+  const restaurants = [];
+  for (const storeId of allStoreIds) {
+    const store = await getStore(env, storeId);
+    if (store && store.category && (store.category.includes('مطعم') || store.category.includes('كافيه'))) {
+      restaurants.push(store);
+    }
+  }
+  if (restaurants.length === 0) {
+    return editMessage(chatId, msgId,
+      `🍽️ <b>المطاعم</b>\n\n😔 لا توجد مطاعم مسجلة بعد.`,
+      { reply_markup: { inline_keyboard: [[{ text: '➕ أضف مطعمك', callback_data: 'stores_create' }], ...backToMainBtn()] } }
+    );
+  }
+  const buttons = restaurants.map(r => [{ text: `🍽️ ${r.name}`, callback_data: `store_view_${r.id}` }]);
+  buttons.push([{ text: '🏠 القائمة الرئيسية', callback_data: 'main_menu' }]);
+  return editMessage(chatId, msgId, `🍽️ <b>المطاعم والمقاهي</b> (${restaurants.length}):`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+// ==================== المنتجات المميزة ====================
+async function showFeaturedProducts(chatId, msgId, env) {
+  const featuredIds = await kvGet(env, 'featured_products') || [];
+  if (featuredIds.length === 0) {
+    return editMessage(chatId, msgId,
+      `⭐ <b>المنتجات المميزة</b>\n\n😔 لا توجد منتجات مميزة بعد.`,
+      { reply_markup: { inline_keyboard: backToMainBtn() } }
+    );
+  }
+  const buttons = [];
+  for (const pId of featuredIds) {
+    const p = await getProduct(env, pId);
+    if (p) buttons.push([{ text: `⭐ ${p.name} — ${p.price}₪`, callback_data: `product_view_${p.id}` }]);
+  }
+  buttons.push([{ text: '🏠 القائمة الرئيسية', callback_data: 'main_menu' }]);
+  return editMessage(chatId, msgId, `⭐ <b>المنتجات المميزة</b>:`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+// ==================== العروض ====================
+async function showOffers(chatId, msgId, env) {
+  const offers = await kvGet(env, 'offers') || [];
+  if (offers.length === 0) {
+    return editMessage(chatId, msgId,
+      `🎁 <b>العروض</b>\n\n😔 لا توجد عروض متاحة حالياً. ترقبوا! 🔔`,
+      { reply_markup: { inline_keyboard: backToMainBtn() } }
+    );
+  }
+  let text = `🎁 <b>العروض الحالية:</b>\n\n`;
+  offers.forEach((offer, i) => {
+    text += `${i + 1}. ${offer.text}\n\n`;
+  });
+  return editMessage(chatId, msgId, text, { reply_markup: { inline_keyboard: backToMainBtn() } });
+}
+
+// ==================== إضافة إعلان ====================
+async function startAddAd(chatId, msgId, userId, env) {
+  await setState(env, userId, { step: 'add_ad_text', data: {} });
+  return editMessage(chatId, msgId,
+    `📢 <b>إضافة إعلان</b>\n\nاكتب نص إعلانك وسيظهر في قسم إعلاناتي:`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'main_menu' }]] } }
+  );
+}
+
+// ==================== حسابي ====================
+async function showAccountMenu(chatId, msgId, userId, env) {
+  const user = await getUser(env, userId);
+  return editMessage(chatId, msgId,
+    `👤 <b>حسابي</b>\n\n` +
+    `🆔 <b>معرفك:</b> <code>${userId}</code>\n` +
+    `⭐ <b>الخطة:</b> ${user.premium ? '✨ مميزة' : '🆓 مجانية'}`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '📦 طلباتي', callback_data: 'account_orders' }],
+          [{ text: '📢 إعلاناتي', callback_data: 'account_ads' }],
+          [{ text: '🔖 المحفوظات', callback_data: 'account_saved' }],
+          [{ text: '⭐ الاشتراك', callback_data: 'account_subscription' }],
+          [{ text: '🏪 متجري', callback_data: 'account_mystore' }],
+          [{ text: '🏠 القائمة الرئيسية', callback_data: 'main_menu' }]
+        ]
+      }
+    }
+  );
+}
+
+async function showMyOrders(chatId, msgId, userId, env) {
+  return editMessage(chatId, msgId,
+    `📦 <b>طلباتي</b>\n\nسيتم تطوير هذه الخاصية قريباً. 🚀`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'menu_account' }]] } }
+  );
+}
+
+async function showMyAds(chatId, msgId, userId, env) {
+  const user = await getUser(env, userId);
+  const userProductIds = user.products || [];
+  if (userProductIds.length === 0) {
+    return editMessage(chatId, msgId,
+      `📢 <b>إعلاناتي</b>\n\n😔 لم تضف أي إعلانات بعد.`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '➕ أضف منتجاً', callback_data: 'menu_market' }],
+            [{ text: '🔙 رجوع', callback_data: 'menu_account' }]
+          ]
+        }
+      }
+    );
+  }
+  const buttons = [];
+  for (const pId of userProductIds) {
+    const p = await getProduct(env, pId);
+    if (p) buttons.push([{ text: `🛍️ ${p.name} — ${p.price}₪`, callback_data: `product_view_${p.id}` }]);
+  }
+  buttons.push([{ text: '🔙 رجوع', callback_data: 'menu_account' }]);
+  return editMessage(chatId, msgId, `📢 <b>إعلاناتي</b> (${userProductIds.length} إعلان):`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function showSavedMenu(chatId, msgId, userId, env) {
+  return editMessage(chatId, msgId,
+    `🔖 <b>المحفوظات</b>\n\nاختر نوع المحفوظات:`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🏪 المتاجر المحفوظة', callback_data: 'account_saved_stores' }],
+          [{ text: '🛍️ المنتجات المحفوظة', callback_data: 'account_saved_products' }],
+          [{ text: '🔙 رجوع', callback_data: 'menu_account' }]
+        ]
+      }
+    }
+  );
+}
+
+async function showSavedStores(chatId, msgId, userId, env, page) {
+  const user = await getUser(env, userId);
+  const savedIds = user.saved_stores || [];
+  if (savedIds.length === 0) {
+    return editMessage(chatId, msgId, `🏪 <b>المتاجر المحفوظة</b>\n\n😔 لم تحفظ أي متاجر بعد.`, { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'account_saved' }]] } });
+  }
+  const buttons = [];
+  for (const storeId of savedIds) {
+    const store = await getStore(env, storeId);
+    if (store) buttons.push([{ text: `🏪 ${store.name}`, callback_data: `store_view_${store.id}` }]);
+  }
+  buttons.push([{ text: '🔙 رجوع', callback_data: 'account_saved' }]);
+  return editMessage(chatId, msgId, `🏪 <b>المتاجر المحفوظة</b> (${savedIds.length}):`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function showSavedProducts(chatId, msgId, userId, env, page) {
+  const user = await getUser(env, userId);
+  const savedIds = user.saved_products || [];
+  if (savedIds.length === 0) {
+    return editMessage(chatId, msgId, `🛍️ <b>المنتجات المحفوظة</b>\n\n😔 لم تحفظ أي منتجات بعد.`, { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'account_saved' }]] } });
+  }
+  const buttons = [];
+  for (const pId of savedIds) {
+    const p = await getProduct(env, pId);
+    if (p) buttons.push([{ text: `🛍️ ${p.name} — ${p.price}₪`, callback_data: `product_view_${p.id}` }]);
+  }
+  buttons.push([{ text: '🔙 رجوع', callback_data: 'account_saved' }]);
+  return editMessage(chatId, msgId, `🛍️ <b>المنتجات المحفوظة</b> (${savedIds.length}):`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function showSubscription(chatId, msgId, userId, env) {
+  const admin = await isAdmin(env, userId);
+  const customText = await kvGetText(env, 'subscription_text') ||
+    `✨ <b>الاشتراك المميز</b>\n\n🌟 مزايا الخطة المميزة:\n• إضافة أكثر من متجرين\n• منتجات مميزة في الصفحة الرئيسية\n• أولوية في نتائج البحث\n• شارة مميزة على متجرك\n\nللاشتراك والترقية تواصل معنا! 🚀`;
+
+  const buttons = [
+    [{ text: '💬 تواصل للترقية', url: 'https://t.me/Anas_Hc' }],
+    [{ text: '🔙 رجوع', callback_data: 'menu_account' }]
+  ];
+  if (admin) buttons.splice(1, 0, [{ text: '✏️ تغيير النص', callback_data: 'admin_change_sub_text' }]);
+  return editMessage(chatId, msgId, customText, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function showMyStores(chatId, msgId, userId, env) {
+  const user = await getUser(env, userId);
+  const storeIds = user.stores || [];
+  if (storeIds.length === 0) {
+    return editMessage(chatId, msgId,
+      `🏪 <b>متجري</b>\n\n😔 لم تنشئ أي متجر بعد.`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '➕ أنشئ متجرك الآن', callback_data: 'stores_create' }],
+            [{ text: '🔙 رجوع', callback_data: 'menu_account' }]
+          ]
+        }
+      }
+    );
+  }
+  const buttons = [];
+  for (const storeId of storeIds) {
+    const store = await getStore(env, storeId);
+    if (store) buttons.push([{ text: `🏪 ${store.name}`, callback_data: `mystore_manage_${store.id}` }]);
+  }
+  buttons.push([{ text: '🔙 رجوع', callback_data: 'menu_account' }]);
+  return editMessage(chatId, msgId, `🏪 <b>متاجري</b> (${storeIds.length} متجر):`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function showMyStoreManage(chatId, msgId, storeId, userId, env) {
+  const store = await getStore(env, storeId);
+  if (!store || store.ownerId !== userId) return editMessage(chatId, msgId, '❌ ليس لديك صلاحية.');
+  return editMessage(chatId, msgId,
+    `🏪 <b>إدارة المتجر: ${store.name}</b>`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '➕ إضافة منتج', callback_data: `store_addproduct_${storeId}` }],
+          [{ text: '🛍️ عرض المنتجات', callback_data: `store_products_${storeId}` }],
+          [{ text: '✏️ تعديل المتجر', callback_data: `store_edit_${storeId}` }],
+          [{ text: '📊 الإحصائيات', callback_data: `store_stats_${storeId}` }],
+          [{ text: '🗑️ حذف المتجر', callback_data: `store_delete_${storeId}` }],
+          [{ text: '🔙 رجوع', callback_data: 'account_mystore' }]
+        ]
+      }
+    }
+  );
+}
+
+// ==================== البحث ====================
+async function startSearch(chatId, msgId, userId, env) {
+  await setState(env, userId, { step: 'search_query', data: {} });
+  return editMessage(chatId, msgId,
+    `🔍 <b>البحث</b>\n\nاكتب ما تبحث عنه (اسم منتج، متجر، مدينة...):`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'main_menu' }]] } }
+  );
+}
+
+async function handleSearch(chatId, query, env) {
+  const q = query.toLowerCase();
+  const allStoreIds = await getAllStores(env);
+  const allProductIds = await getAllProducts(env);
+  const results = [];
+
+  for (const storeId of allStoreIds) {
+    const store = await getStore(env, storeId);
+    if (store && (store.name.toLowerCase().includes(q) || store.description.toLowerCase().includes(q) || store.category.toLowerCase().includes(q))) {
+      results.push({ type: 'store', item: store });
+    }
+  }
+  for (const pId of allProductIds) {
+    const p = await getProduct(env, pId);
+    if (p && (p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q) || p.city.toLowerCase().includes(q) || p.category.toLowerCase().includes(q))) {
+      results.push({ type: 'product', item: p });
+    }
+  }
+
+  if (results.length === 0) {
+    return sendMessage(chatId,
+      `🔍 <b>نتائج البحث عن: "${query}"</b>\n\n😔 لا توجد نتائج مطابقة. جرب كلمات أخرى.`,
+      { reply_markup: { inline_keyboard: backToMainBtn() } }
+    );
+  }
+
+  const buttons = results.slice(0, 20).map(r => {
+    if (r.type === 'store') return [{ text: `🏪 ${r.item.name} (متجر)`, callback_data: `store_view_${r.item.id}` }];
+    return [{ text: `🛍️ ${r.item.name} — ${r.item.price}₪`, callback_data: `product_view_${r.item.id}` }];
+  });
+  buttons.push([{ text: '🏠 القائمة الرئيسية', callback_data: 'main_menu' }]);
+  return sendMessage(chatId,
+    `🔍 <b>نتائج البحث عن: "${query}"</b>\n(${results.length} نتيجة):`,
+    { reply_markup: { inline_keyboard: buttons } }
+  );
+}
+
+// ==================== لوحة الأدمن ====================
+async function showAdminPanel(chatId, env, msgId = null) {
+  const text = `🛡️ <b>لوحة التحكم — سوق فلسطين</b>\n\nمرحباً بك أيها المالك! 👑`;
+  const keyboard = {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '🚨 البلاغات', callback_data: 'admin_reports' }],
+        [{ text: '👮 إدارة المشرفين', callback_data: 'admin_admins' }],
+        [{ text: '⭐ الاشتراكات', callback_data: 'admin_subscriptions' }],
+        [{ text: '✨ المنتجات المميزة', callback_data: 'admin_featured' }],
+        [{ text: '🎁 إدارة العروض', callback_data: 'admin_offers_manage' }],
+        [{ text: '🏠 القائمة الرئيسية', callback_data: 'main_menu' }]
+      ]
+    }
+  };
+  if (msgId) return editMessage(chatId, msgId, text, keyboard);
+  return sendMessage(chatId, text, keyboard);
+}
+
+async function showAdminReports(chatId, msgId, env) {
+  const reports = await kvGet(env, 'reports') || [];
+  if (reports.length === 0) {
+    return editMessage(chatId, msgId, `🚨 <b>البلاغات</b>\n\n✅ لا توجد بلاغات حالياً.`, { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'admin_panel' }]] } });
+  }
+  let text = `🚨 <b>البلاغات الواردة (${reports.length}):</b>\n\n`;
+  const buttons = [];
+  for (const r of reports.slice(-10)) {
+    text += `• ${r.type === 'store' ? '🏪 متجر' : '🛍️ منتج'}: <b>${r.storeName || r.productName || r.itemId}</b>\n  👤 المُبلِّغ: ${r.reporterUsername}\n\n`;
+    if (r.type === 'store') {
+      buttons.push([{ text: `🗑️ حذف متجر: ${r.storeName || r.itemId}`, callback_data: `admin_report_delete_store_${r.itemId}` }]);
+    }
+  }
+  buttons.push([{ text: '🔙 رجوع', callback_data: 'admin_panel' }]);
+  return editMessage(chatId, msgId, text, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function showAdminAdmins(chatId, msgId, env) {
+  const admins = await getAdmins(env);
+  const text = `👮 <b>إدارة المشرفين</b>\n\n` +
+    (admins.length > 0 ? `المشرفون الحاليون:\n${admins.map(id => `• <code>${id}</code>`).join('\n')}` : 'لا يوجد مشرفون مضافون بعد.');
+  return editMessage(chatId, msgId, text, {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '➕ إضافة مشرف', callback_data: 'admin_add_admin' }],
+        [{ text: '🔙 رجوع', callback_data: 'admin_panel' }]
+      ]
+    }
+  });
+}
+
+async function startAddAdmin(chatId, msgId, userId, env) {
+  await setState(env, userId, { step: 'admin_add_admin_id', data: {} });
+  return editMessage(chatId, msgId,
+    `👮 <b>إضافة مشرف جديد</b>\n\nأرسل الـ ID الخاص بالمشرف (أرقام فقط):`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'admin_panel' }]] } }
+  );
+}
+
+async function showAdminSubscriptions(chatId, msgId, env) {
+  return editMessage(chatId, msgId,
+    `⭐ <b>إدارة الاشتراكات</b>\n\nأضف مشتركاً جديداً بإدخال ID المستخدم:`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '➕ إضافة مشترك', callback_data: 'admin_add_subscriber' }],
+          [{ text: '✏️ تغيير نص الاشتراك', callback_data: 'admin_change_sub_text' }],
+          [{ text: '🔙 رجوع', callback_data: 'admin_panel' }]
+        ]
+      }
+    }
+  );
+}
+
+async function startAddSubscriber(chatId, msgId, userId, env) {
+  await setState(env, userId, { step: 'admin_add_subscriber_id', data: {} });
+  return editMessage(chatId, msgId,
+    `⭐ <b>إضافة مشترك مميز</b>\n\nأرسل ID المستخدم:`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'admin_panel' }]] } }
+  );
+}
+
+async function showAdminFeatured(chatId, msgId, env) {
+  const featuredIds = await kvGet(env, 'featured_products') || [];
+  return editMessage(chatId, msgId,
+    `⭐ <b>المنتجات المميزة</b>\n\nعدد المنتجات المميزة: ${featuredIds.length}`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '➕ إضافة منتج مميز', callback_data: 'admin_add_featured' }],
+          [{ text: '🔙 رجوع', callback_data: 'admin_panel' }]
+        ]
+      }
+    }
+  );
+}
+
+async function startAddFeatured(chatId, msgId, userId, env) {
+  await setState(env, userId, { step: 'admin_add_featured_id', data: {} });
+  return editMessage(chatId, msgId,
+    `⭐ <b>إضافة منتج مميز</b>\n\nأرسل ID المنتج:`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'admin_panel' }]] } }
+  );
+}
+
+async function showAdminOffers(chatId, msgId, env) {
+  const offers = await kvGet(env, 'offers') || [];
+  return editMessage(chatId, msgId,
+    `🎁 <b>إدارة العروض</b>\n\nعدد العروض الحالية: ${offers.length}`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '➕ إضافة عرض', callback_data: 'admin_add_offer' }],
+          [{ text: '🔙 رجوع', callback_data: 'admin_panel' }]
+        ]
+      }
+    }
+  );
+}
+
+async function startAddOffer(chatId, msgId, userId, env) {
+  await setState(env, userId, { step: 'admin_add_offer_text', data: {} });
+  return editMessage(chatId, msgId,
+    `🎁 <b>إضافة عرض جديد</b>\n\naكتب نص العرض:`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'admin_panel' }]] } }
+  );
+}
+
+async function startChangeSubText(chatId, msgId, userId, env) {
+  await setState(env, userId, { step: 'admin_change_sub_text', data: {} });
+  return editMessage(chatId, msgId,
+    `✏️ <b>تغيير نص صفحة الاشتراك</b>\n\nاكتب النص الجديد (يدعم HTML):`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'admin_panel' }]] } }
+  );
+}
+
+async function showAdminCategoryDetail(chatId, msgId, cat, env) {
+  const admin = await isAdmin(env, OWNER_ID);
+  const allProducts = await getAllProducts(env);
+  const catProds = [];
+  for (const pId of allProducts) {
+    const p = await getProduct(env, pId);
+    if (p && p.category === cat) catProds.push(p);
+  }
+  const buttons = catProds.slice(0, 20).map(p => [{ text: `🛍️ ${p.name}`, callback_data: `product_view_${p.id}` }]);
+  buttons.push([{ text: '🗑️ حذف هذا التصنيف', callback_data: `admin_cat_delete_${encodeURIComponent(cat)}` }]);
+  buttons.push([{ text: '🔙 رجوع', callback_data: 'menu_all_cats' }]);
+  return editMessage(chatId, msgId,
+    `🗂️ <b>التصنيف: ${cat}</b>\n\nعدد المنتجات: ${catProds.length}`,
+    { reply_markup: { inline_keyboard: buttons } }
+  );
+}
+
+async function showAdminCatDeleteConfirm(chatId, msgId, cat, env) {
+  return editMessage(chatId, msgId,
+    `⚠️ <b>حذف التصنيف: ${cat}</b>\n\nهل تريد نقل المنتجات إلى تصنيف آخر أم حذفها؟`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🔄 نقل إلى تصنيف آخر', callback_data: `admin_cat_move_select_${encodeURIComponent(cat)}` }],
+          [{ text: '❌ لا', callback_data: `admin_cat_view_${encodeURIComponent(cat)}` }]
+        ]
+      }
+    }
+  );
+}
+
+async function showCatMoveTargets(chatId, msgId, fromCat, env) {
+  const cats = await getMarketCategories(env);
+  const buttons = cats.filter(c => c !== fromCat).map(cat => [{
+    text: cat,
+    callback_data: `admin_cat_move_to_${encodeURIComponent(fromCat)}|${encodeURIComponent(cat)}`
+  }]);
+  buttons.push([{ text: '🔙 رجوع', callback_data: `admin_cat_view_${encodeURIComponent(fromCat)}` }]);
+  return editMessage(chatId, msgId, `🔄 اختر التصنيف الهدف:`, { reply_markup: { inline_keyboard: buttons } });
+}
+
+async function handleMoveCategoryProducts(chatId, msgId, fromCat, toCat, env) {
+  const allProducts = await getAllProducts(env);
+  let moved = 0;
+  for (const pId of allProducts) {
+    const p = await getProduct(env, pId);
+    if (p && p.category === fromCat) {
+      p.category = toCat;
+      await saveProduct(env, p);
+      moved++;
+    }
+  }
+  await removeMarketCategory(env, fromCat);
+  return editMessage(chatId, msgId,
+    `✅ <b>تم نقل ${moved} منتج من "${fromCat}" إلى "${toCat}" وحذف التصنيف القديم.</b>`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 لوحة التحكم', callback_data: 'admin_panel' }]] } }
+  );
+}
+
+async function handleAdminDeleteCategory(chatId, msgId, cat, env) {
+  await removeMarketCategory(env, cat);
+  return editMessage(chatId, msgId,
+    `✅ تم حذف التصنيف "${cat}".`,
+    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'admin_panel' }]] } }
+  );
+}
