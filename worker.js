@@ -3,7 +3,7 @@
 // ================================================
 
 const BOT_TOKEN = '8656873565:AAEQZw4-hbfvDPTTSNkadeuijDRx47__AJQ';
-const OWNER_ID = 6668195885;
+const OWNER_ID = 8417636756;
 const API_BASE = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 // ==================== معالج الطلبات الرئيسي ====================
