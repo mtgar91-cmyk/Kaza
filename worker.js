@@ -94,6 +94,27 @@ async function saveUser(env, user) {
   await kvSet(env, `user:${user.id}`, user);
 }
 
+// ==================== حد المتاجر ====================
+async function getUserMaxStores(env, userId) {
+  if (userId === OWNER_ID) return Infinity;
+  const user = await getUser(env, userId);
+  return user.maxStores || (user.premium ? 999 : 2);
+}
+
+// ==================== تصانيف المطاعم ====================
+const BASE_RESTAURANT_CATS = ['🍕 وجبات رئيسية', '🥗 سلطات ومقبلات', '🍰 حلويات ومعجنات', '☕ مشروبات وعصائر', '🥙 شاورما وسندويش', '🍗 مشاوي ومشويات'];
+async function getRestaurantCategories(env) {
+  const custom = await kvGet(env, 'restaurant_categories_custom') || [];
+  return [...BASE_RESTAURANT_CATS, ...custom];
+}
+async function addRestaurantCategory(env, category) {
+  const custom = await kvGet(env, 'restaurant_categories_custom') || [];
+  if (!custom.includes(category)) {
+    custom.push(category);
+    await kvSet(env, 'restaurant_categories_custom', custom);
+  }
+}
+
 // ==================== ID Generator ====================
 async function genId(env, prefix) {
   const counter = (await kvGet(env, `counter:${prefix}`) || 0) + 1;
@@ -660,12 +681,6 @@ async function handleConversationStep(msg, state, env) {
     case 'store_description':
       if (!text || text.length < 5) return sendMessage(chatId, '❌ الوصف قصير جداً، اكتب وصفاً أوضح:');
       state.data.description = text;
-      // إذا كان المتجر مطعم، نعرض فقط تصانيف المطاعم والكافيهات
-      if (state.data.isRestaurant) {
-        state.step = 'store_category';
-        await setState(env, userId, state);
-        return showStoreCategorySelection(chatId, env, true);
-      }
       state.step = 'store_category';
       await setState(env, userId, state);
       return showStoreCategorySelection(chatId, env);
@@ -958,11 +973,11 @@ async function showStoreDetail(chatId, msgId, storeId, userId, env) {
   return editMessage(chatId, msgId, text, { reply_markup: { inline_keyboard: buttons } });
 }
 
-async function startCreateStore(chatId, msgId, userId, env, isRestaurant = false) {
+async function startCreateStore(chatId, msgId, userId, env) {
   const user = await getUser(env, userId);
   const userStores = user.stores || [];
-  const maxStores = user.maxStores || (user.premium ? 999 : 2);
-  if (userStores.length >= maxStores) {
+  const maxStores = await getUserMaxStores(env, userId);
+  if (maxStores !== Infinity && userStores.length >= maxStores) {
     return editMessage(chatId, msgId,
       `⚠️ <b>لقد وصلت للحد الأقصى من المتاجر!</b>\n\nخطتك الحالية تسمح بـ ${maxStores} متاجر فقط.\n\nللحصول على مزيد من المتاجر، اشترك في الخطة المميزة ✨`,
       {
@@ -975,25 +990,37 @@ async function startCreateStore(chatId, msgId, userId, env, isRestaurant = false
       }
     );
   }
-  await setState(env, userId, { step: 'store_name', data: { isRestaurant } });
+  await setState(env, userId, { step: 'store_name', data: {} });
   return editMessage(chatId, msgId,
-    `🏪 <b>إنشاء ${isRestaurant ? 'مطعم' : 'متجر'}</b>\n\n` +
-    `مرحباً! دعنا ننشئ ${isRestaurant ? 'مطعمك' : 'متجرك'} خطوة بخطوة.\n\n` +
-    `<b>الخطوة 1 — اكتب اسم ${isRestaurant ? 'المطعم' : 'المتجر'}:</b>`
+    `🏪 <b>إنشاء متجر</b>\n\n` +
+    `مرحباً! دعنا ننشئ متجرك خطوة بخطوة.\n\n` +
+    `<b>الخطوة 1 — اكتب اسم المتجر:</b>`
   );
 }
 
-async function showStoreCategorySelection(chatId, env, restaurantOnly = false) {
-  let cats = await getStoreCategories(env);
-  if (restaurantOnly) {
-    cats = cats.filter(c => c.includes('مطعم') || c.includes('كافيه') || c.includes('مخبز') || c.includes('حلويات'));
+async function showStoreCategorySelection(chatId, env) {
+  const marketCats  = await getMarketCategories(env);
+  const storeCats   = await getStoreCategories(env);
+  const restaurantCats = await getRestaurantCategories(env);
+  const customServiceCats = await kvGet(env, 'service_categories_custom') || [];
+  const allServiceCats = [...SERVICE_CATS_FLAT, ...customServiceCats];
+
+  const buttons = [];
+  buttons.push([{ text: '─── 🛒 تصانيف السوق ───', callback_data: 'noop' }]);
+  for (let i = 0; i < marketCats.length; i += 2) {
+    const row = marketCats.slice(i, i + 2).map(c => ({ text: c, callback_data: `storecat_select_${c}` }));
+    buttons.push(row);
   }
-  const buttons = cats.map(cat => [{ text: cat, callback_data: `storecat_select_${cat}` }]);
-  if (!restaurantOnly) {
-    buttons.push([{ text: '🔤 أخرى (حدد بنفسك)', callback_data: 'storecat_select_🏷️ أخرى' }]);
-  }
+  buttons.push([{ text: '─── 🏪 تصانيف المتاجر ───', callback_data: 'noop' }]);
+  storeCats.forEach(c => buttons.push([{ text: c, callback_data: `storecat_select_${c}` }]));
+  buttons.push([{ text: '─── 🔧 تصانيف الخدمات ───', callback_data: 'noop' }]);
+  SERVICE_CATS.forEach(pair => buttons.push(pair.map(c => ({ text: c, callback_data: `storecat_select_${c}` }))));
+  for (const c of customServiceCats) buttons.push([{ text: c, callback_data: `storecat_select_${c}` }]);
+  buttons.push([{ text: '─── 🍽️ تصانيف المطاعم ───', callback_data: 'noop' }]);
+  restaurantCats.forEach(c => buttons.push([{ text: c, callback_data: `storecat_select_${c}` }]));
+  buttons.push([{ text: '➕ أضف تصنيفاً جديداً', callback_data: 'storecat_add_new' }]);
   return sendMessage(chatId,
-    `🗂️ <b>اختر تصنيف ${restaurantOnly ? 'المطعم' : 'المتجر'}:</b>`,
+    `🗂️ <b>اختر تصنيف المتجر:</b>\n\nيمكنك اختيار أي تصنيف من القائمة أو إضافة تصنيف جديد:`,
     { reply_markup: { inline_keyboard: buttons } }
   );
 }
@@ -1202,44 +1229,35 @@ async function startAddMarketCategory(chatId, msgId, userId, env) {
 async function showAllCategories(chatId, msgId, env) {
   const marketCats = await getMarketCategories(env);
   const storeCats  = await getStoreCategories(env);
+  const restaurantCats = await getRestaurantCategories(env);
   const customServiceCats = await kvGet(env, 'service_categories_custom') || [];
   const allServiceCats = [...SERVICE_CATS_FLAT, ...customServiceCats];
 
-  // بناء نوافذ السوق — صفان متوازيان
   const marketRows = [];
   for (let i = 0; i < marketCats.length; i += 2) {
-    const row = marketCats.slice(i, i + 2).map(cat => ({
-      text: cat,
-      callback_data: `market_cat_${cat}`
-    }));
-    marketRows.push(row);
+    marketRows.push(marketCats.slice(i, i + 2).map(cat => ({ text: cat, callback_data: `market_cat_${cat}` })));
   }
-
-  // نوافذ الخدمات — صفان متوازيان
   const serviceRows = SERVICE_CATS.map(pair =>
     pair.map(cat => ({ text: cat, callback_data: `service_cat_${cat}` }))
   );
-  for (const cat of customServiceCats) {
-    serviceRows.push([{ text: cat, callback_data: `service_cat_${cat}` }]);
-  }
-
-  // نوافذ المتاجر — صف واحد لكل تصنيف
-  const storeRows = storeCats.map(cat => ([{
-    text: cat,
-    callback_data: `storecat_select_${cat}`
-  }]));
+  for (const cat of customServiceCats) serviceRows.push([{ text: cat, callback_data: `service_cat_${cat}` }]);
+  const storeRows = storeCats.map(cat => ([{ text: cat, callback_data: `storecat_select_${cat}` }]));
+  const restaurantRows = restaurantCats.map(cat => ([{ text: cat, callback_data: `service_cat_${cat}` }]));
 
   const buttons = [
+    [{ text: '──── 🛒 تصانيف السوق ────', callback_data: 'noop' }],
     ...marketRows,
-    [{ text: '─────── 🏪 تصانيف المتاجر ───────', callback_data: 'noop' }],
+    [{ text: '──── 🏪 تصانيف المتاجر ────', callback_data: 'noop' }],
     ...storeRows,
-    [{ text: '─────── 🔧 تصانيف الخدمات ───────', callback_data: 'noop' }],
+    [{ text: '──── 🔧 تصانيف الخدمات ────', callback_data: 'noop' }],
     ...serviceRows,
+    [{ text: '──── 🍽️ تصانيف المطاعم ────', callback_data: 'noop' }],
+    ...restaurantRows,
     [{ text: '🏠 القائمة الرئيسية', callback_data: 'main_menu' }]
   ];
 
   return editMessage(chatId, msgId,
-    `🗂️ <b>التصانيف المتاحة</b>\n\n🛒 <b>السوق (${marketCats.length})</b>  •  🏪 <b>المتاجر (${storeCats.length})</b>  •  🔧 <b>الخدمات (${allServiceCats.length})</b>`,
+    `🗂️ <b>التصانيف المتاحة</b>\n\n🛒 السوق (${marketCats.length})  •  🏪 المتاجر (${storeCats.length})  •  🔧 الخدمات (${allServiceCats.length})  •  🍽️ المطاعم (${restaurantCats.length})`,
     { reply_markup: { inline_keyboard: buttons } }
   );
 }
@@ -1529,43 +1547,38 @@ async function showRestaurantsMenu(chatId, msgId, env, userId) {
   const restaurants = [];
   for (const storeId of allStoreIds) {
     const store = await getStore(env, storeId);
-    if (store && store.category && (store.category.includes('مطعم') || store.category.includes('كافيه'))) {
+    if (store && store.category && (
+      store.category.includes('مطعم') || store.category.includes('كافيه') ||
+      store.category.includes('مشروب') || store.category.includes('وجبة') ||
+      store.category.includes('حلويات') || store.category.includes('مخبز') ||
+      store.category.includes('شاورما') || store.category.includes('مشاوي') ||
+      store.category.includes('سلطة')
+    )) {
       restaurants.push(store);
     }
   }
 
-  // أزرار لإضافة مطعم — مع خيار الإضافة لمتجر موجود
+  // زر "أضف طعاماً" فقط — لا إنشاء مطعم جديد هنا
   const addButtons = [];
   if (userId) {
     const user = await getUser(env, userId);
-    const userStores = user.stores || [];
-    const userStoreObjs = [];
-    for (const sid of userStores) {
-      const s = await getStore(env, sid);
-      if (s) userStoreObjs.push(s);
-    }
-    if (userStoreObjs.length > 0) {
-      addButtons.push([{ text: '🏗️ إنشاء مطعم جديد', callback_data: 'restaurant_create_new' }]);
-      for (let i = 0; i < userStoreObjs.length; i++) {
-        addButtons.push([{ text: `➕ إضافة لـ: ${userStoreObjs[i].name}`, callback_data: `restaurant_add_store_${userStoreObjs[i].id}` }]);
-      }
+    if (user.stores && user.stores.length > 0) {
+      addButtons.push([{ text: '🍽️ أضف طعاماً لمتجرك', callback_data: 'rest_add_food' }]);
     } else {
-      addButtons.push([{ text: '➕ أضف مطعمك', callback_data: 'restaurant_create_new' }]);
+      addButtons.push([{ text: '🏪 أنشئ متجراً أولاً', callback_data: 'menu_stores' }]);
     }
-  } else {
-    addButtons.push([{ text: '➕ أضف مطعمك', callback_data: 'restaurant_create_new' }]);
   }
 
   if (restaurants.length === 0) {
     return editMessage(chatId, msgId,
-      `🍽️ <b>المطاعم</b>\n\n😔 لا توجد مطاعم مسجلة بعد.`,
-      { reply_markup: { inline_keyboard: [...addButtons, ...backToMainBtn()] } }
+      `🍽️ <b>المطاعم</b>\n\n😔 لا توجد مطاعم مسجلة بعد.\n\n💡 <i>لإضافة مطعم: أنشئ متجراً من قسم المتاجر واختر تصنيفاً مناسباً للطعام.</i>`,
+      { reply_markup: { inline_keyboard: [...addButtons, [{ text: '🏪 المتاجر', callback_data: 'menu_stores' }], ...backToMainBtn()] } }
     );
   }
   const buttons = restaurants.map(r => [{ text: `🍽️ ${r.name}`, callback_data: `store_view_${r.id}` }]);
   buttons.push(...addButtons);
   buttons.push([{ text: '🏠 القائمة الرئيسية', callback_data: 'main_menu' }]);
-  return editMessage(chatId, msgId, `🍽️ <b>المطاعم والمقاهي</b> (${restaurants.length}):`, { reply_markup: { inline_keyboard: buttons } });
+  return editMessage(chatId, msgId, `🍽️ <b>المطاعم والمقاهي</b> (${restaurants.length}):\n\n💡 <i>لإضافة مطعم جديد استخدم قسم المتاجر.</i>`, { reply_markup: { inline_keyboard: buttons } });
 }
 
 // ==================== المنتجات المميزة ====================
@@ -1604,10 +1617,45 @@ async function showOffers(chatId, msgId, env) {
 
 // ==================== إضافة إعلان ====================
 async function startAddAd(chatId, msgId, userId, env) {
-  await setState(env, userId, { step: 'add_ad_text', data: {} });
   return editMessage(chatId, msgId,
-    `📢 <b>إضافة إعلان</b>\n\nاكتب نص إعلانك وسيظهر في قسم إعلاناتي:`,
-    { reply_markup: { inline_keyboard: [[{ text: '🔙 رجوع', callback_data: 'main_menu' }]] } }
+    `📢 <b>أضف إعلانك</b>\n\nفي أي قسم تريد إضافة الإعلان؟`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🏪 المتاجر', callback_data: 'addad_section_store' }, { text: '🛒 السوق', callback_data: 'addad_section_market' }],
+          [{ text: '🔧 الخدمات', callback_data: 'addad_section_service' }, { text: '🍽️ المطاعم', callback_data: 'addad_section_restaurant' }],
+          [{ text: '🔙 رجوع', callback_data: 'main_menu' }]
+        ]
+      }
+    }
+  );
+}
+
+async function selectAdSection(chatId, msgId, userId, section, env) {
+  let cats = [];
+  let sectionName = '';
+  let catPrefix = 'addad_cat_';
+
+  if (section === 'market') {
+    cats = await getMarketCategories(env);
+    sectionName = '🛒 السوق';
+  } else if (section === 'service') {
+    const customServiceCats = await kvGet(env, 'service_categories_custom') || [];
+    cats = [...SERVICE_CATS_FLAT, ...customServiceCats];
+    sectionName = '🔧 الخدمات';
+  } else if (section === 'restaurant') {
+    cats = await getRestaurantCategories(env);
+    sectionName = '🍽️ المطاعم';
+  } else if (section === 'store') {
+    cats = await getStoreCategories(env);
+    sectionName = '🏪 المتاجر';
+  }
+
+  const buttons = cats.map(cat => [{ text: cat, callback_data: `${catPrefix}${section}|${cat}` }]);
+  buttons.push([{ text: '🔙 رجوع', callback_data: 'menu_addad' }]);
+  return editMessage(chatId, msgId,
+    `📢 <b>إعلان — ${sectionName}</b>\n\nاختر التصنيف:`,
+    { reply_markup: { inline_keyboard: buttons } }
   );
 }
 
