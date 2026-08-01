@@ -362,7 +362,7 @@ async function handleCallbackQuery(cq, env) {
 
   // تصانيف المتاجر
   if (data.startsWith('storecat_select_')) {
-    const cat = decodeURIComponent(data.replace('storecat_select_', ''));
+    const cat = data.replace('storecat_select_', '');
     const state = await getState(env, userId);
     if (state.step === 'store_category') {
       state.data.category = cat;
@@ -402,12 +402,12 @@ async function handleCallbackQuery(cq, env) {
   // ===== السوق =====
   if (data === 'menu_market') return showMarketMenu(chatId, msgId, env);
   if (data.startsWith('market_cat_')) {
-    const cat = decodeURIComponent(data.replace('market_cat_', ''));
+    const cat = data.replace('market_cat_', '');
     return showProductsByCategory(chatId, msgId, cat, env, 0);
   }
   if (data.startsWith('market_cat_page_')) {
     const parts = data.split('|');
-    const cat = decodeURIComponent(parts[0].replace('market_cat_page_', ''));
+    const cat = parts[0].replace('market_cat_page_', '');
     const page = parseInt(parts[1]);
     return showProductsByCategory(chatId, msgId, cat, env, page);
   }
@@ -442,7 +442,7 @@ async function handleCallbackQuery(cq, env) {
 
   // حالة الضغط على: ملابس/إلكترونيات... إلخ أثناء إضافة منتج
   if (data.startsWith('prodcat_select_')) {
-    const cat = decodeURIComponent(data.replace('prodcat_select_', ''));
+    const cat = data.replace('prodcat_select_', '');
     const state = await getState(env, userId);
     if (state.step === 'product_category') {
       state.data.category = cat;
@@ -496,7 +496,7 @@ async function handleCallbackQuery(cq, env) {
 
   // المدن
   if (data.startsWith('city_select_')) {
-    const city = decodeURIComponent(data.replace('city_select_', ''));
+    const city = data.replace('city_select_', '');
     const state = await getState(env, userId);
     if (state.step === 'product_city') {
       state.data.city = city;
@@ -526,16 +526,16 @@ async function handleCallbackQuery(cq, env) {
   if (data === 'menu_services') return showServicesMenu(chatId, msgId, env);
   if (data.startsWith('service_cat_page_')) {
     const parts = data.replace('service_cat_page_', '').split('|');
-    const cat = decodeURIComponent(parts[0]);
+    const cat = parts[0];
     const page = parseInt(parts[1]);
     return showServicesByCategory(chatId, msgId, cat, env, page);
   }
   if (data.startsWith('service_add_')) {
-    const cat = decodeURIComponent(data.replace('service_add_', ''));
+    const cat = data.replace('service_add_', '');
     return startAddServiceInCategory(chatId, msgId, userId, cat, env);
   }
   if (data.startsWith('service_cat_')) {
-    const cat = decodeURIComponent(data.replace('service_cat_', ''));
+    const cat = data.replace('service_cat_', '');
     return showServicesByCategory(chatId, msgId, cat, env, 0);
   }
 
@@ -588,25 +588,25 @@ async function handleCallbackQuery(cq, env) {
 
   // تصنيفات الأدمن
   if (data.startsWith('admin_cat_view_')) {
-    const cat = decodeURIComponent(data.replace('admin_cat_view_', ''));
+    const cat = data.replace('admin_cat_view_', '');
     return showAdminCategoryDetail(chatId, msgId, cat, env);
   }
   if (data.startsWith('admin_cat_delete_')) {
-    const cat = decodeURIComponent(data.replace('admin_cat_delete_', ''));
+    const cat = data.replace('admin_cat_delete_', '');
     return showAdminCatDeleteConfirm(chatId, msgId, cat, env);
   }
   if (data.startsWith('admin_cat_delete_confirm_')) {
-    const cat = decodeURIComponent(data.replace('admin_cat_delete_confirm_', ''));
+    const cat = data.replace('admin_cat_delete_confirm_', '');
     return handleAdminDeleteCategory(chatId, msgId, cat, env);
   }
   if (data.startsWith('admin_cat_move_to_')) {
     const parts = data.replace('admin_cat_move_to_', '').split('|');
-    const fromCat = decodeURIComponent(parts[0]);
-    const toCat = decodeURIComponent(parts[1]);
+    const fromCat = parts[0];
+    const toCat = parts[1];
     return handleMoveCategoryProducts(chatId, msgId, fromCat, toCat, env);
   }
   if (data.startsWith('admin_cat_move_select_')) {
-    const fromCat = decodeURIComponent(data.replace('admin_cat_move_select_', ''));
+    const fromCat = data.replace('admin_cat_move_select_', '');
     return showCatMoveTargets(chatId, msgId, fromCat, env);
   }
 }
@@ -919,8 +919,8 @@ async function startCreateStore(chatId, msgId, userId, env) {
 
 async function showStoreCategorySelection(chatId, env) {
   const cats = await getStoreCategories(env);
-  const buttons = cats.map(cat => [{ text: cat, callback_data: `storecat_select_${encodeURIComponent(cat)}` }]);
-  buttons.push([{ text: '🔤 أخرى (حدد بنفسك)', callback_data: 'storecat_select_' + encodeURIComponent('🏷️ أخرى') }]);
+  const buttons = cats.map(cat => [{ text: cat, callback_data: `storecat_select_${cat}` }]);
+  buttons.push([{ text: '🔤 أخرى (حدد بنفسك)', callback_data: 'storecat_select_🏷️ أخرى' }]);
   return sendMessage(chatId,
     `🗂️ <b>اختر تصنيف المتجر:</b>`,
     { reply_markup: { inline_keyboard: buttons } }
@@ -1078,7 +1078,7 @@ async function showStoreStats(chatId, msgId, storeId, userId, env) {
 // ==================== واجهة السوق ====================
 async function showMarketMenu(chatId, msgId, env) {
   const cats = await getMarketCategories(env);
-  const buttons = cats.map(cat => [{ text: cat, callback_data: `market_cat_${encodeURIComponent(cat)}` }]);
+  const buttons = cats.map(cat => [{ text: cat, callback_data: `market_cat_${cat}` }]);
   buttons.push([{ text: '🗂️ التصنيفات المتاحة', callback_data: 'menu_all_cats' }]);
   buttons.push([{ text: '➕ إضافة تصنيف', callback_data: 'market_add_cat' }]);
   buttons.push([{ text: '🏠 القائمة الرئيسية', callback_data: 'main_menu' }]);
@@ -1098,7 +1098,7 @@ async function showProductsByCategory(chatId, msgId, cat, env, page) {
       {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '➕ إضافة منتج', callback_data: `prodcat_select_${encodeURIComponent(cat)}` }],
+            [{ text: '➕ إضافة منتج', callback_data: `prodcat_select_${cat}` }],
             [{ text: '🔙 رجوع', callback_data: 'menu_market' }]
           ]
         }
@@ -1109,12 +1109,12 @@ async function showProductsByCategory(chatId, msgId, cat, env, page) {
   const start = page * pageSize;
   const pageProds = catProducts.slice(start, start + pageSize);
   const buttons = [
-    [{ text: '➕ إضافة منتج', callback_data: `prodcat_select_${encodeURIComponent(cat)}` }],
+    [{ text: '➕ إضافة منتج', callback_data: `prodcat_select_${cat}` }],
     ...pageProds.map(p => [{ text: `🛍️ ${p.name} — ${p.price}₪ | ${p.condition}`, callback_data: `product_view_${p.id}` }])
   ];
   const nav = [];
-  if (page > 0) nav.push({ text: '⬅️ السابق', callback_data: `market_cat_page_${encodeURIComponent(cat)}|${page - 1}` });
-  if (start + pageSize < catProducts.length) nav.push({ text: 'التالي ➡️', callback_data: `market_cat_page_${encodeURIComponent(cat)}|${page + 1}` });
+  if (page > 0) nav.push({ text: '⬅️ السابق', callback_data: `market_cat_page_${cat}|${page - 1}` });
+  if (start + pageSize < catProducts.length) nav.push({ text: 'التالي ➡️', callback_data: `market_cat_page_${cat}|${page + 1}` });
   if (nav.length > 0) buttons.push(nav);
   buttons.push([{ text: '🔙 رجوع', callback_data: 'menu_market' }]);
   return editMessage(chatId, msgId, `${cat} (${catProducts.length} منتج) — الصفحة ${page + 1}:`, { reply_markup: { inline_keyboard: buttons } });
@@ -1139,23 +1139,23 @@ async function showAllCategories(chatId, msgId, env) {
   for (let i = 0; i < marketCats.length; i += 2) {
     const row = marketCats.slice(i, i + 2).map(cat => ({
       text: cat,
-      callback_data: `market_cat_${encodeURIComponent(cat)}`
+      callback_data: `market_cat_${cat}`
     }));
     marketRows.push(row);
   }
 
   // نوافذ الخدمات — صفان متوازيان
   const serviceRows = SERVICE_CATS.map(pair =>
-    pair.map(cat => ({ text: cat, callback_data: `service_cat_${encodeURIComponent(cat)}` }))
+    pair.map(cat => ({ text: cat, callback_data: `service_cat_${cat}` }))
   );
   for (const cat of customServiceCats) {
-    serviceRows.push([{ text: cat, callback_data: `service_cat_${encodeURIComponent(cat)}` }]);
+    serviceRows.push([{ text: cat, callback_data: `service_cat_${cat}` }]);
   }
 
   // نوافذ المتاجر — صف واحد لكل تصنيف
   const storeRows = storeCats.map(cat => ([{
     text: cat,
-    callback_data: `storecat_select_${encodeURIComponent(cat)}`
+    callback_data: `storecat_select_${cat}`
   }]));
 
   const buttons = [
@@ -1181,15 +1181,15 @@ async function startAddProduct(chatId, msgId, userId, storeId, type, env) {
     const customServiceCats = await kvGet(env, 'service_categories_custom') || [];
     // خدمات: صفان متوازيان كما في نافذة الخدمات
     buttonRows = SERVICE_CATS.map(pair =>
-      pair.map(cat => ({ text: cat, callback_data: `prodcat_select_${encodeURIComponent(cat)}` }))
+      pair.map(cat => ({ text: cat, callback_data: `prodcat_select_${cat}` }))
     );
     for (const cat of customServiceCats) {
-      buttonRows.push([{ text: cat, callback_data: `prodcat_select_${encodeURIComponent(cat)}` }]);
+      buttonRows.push([{ text: cat, callback_data: `prodcat_select_${cat}` }]);
     }
   } else {
     cats = await getMarketCategories(env);
     // سوق: صف واحد لكل تصنيف
-    buttonRows = cats.map(cat => [{ text: cat, callback_data: `prodcat_select_${encodeURIComponent(cat)}` }]);
+    buttonRows = cats.map(cat => [{ text: cat, callback_data: `prodcat_select_${cat}` }]);
   }
   buttonRows.push([{ text: '↩️ رجوع', callback_data: 'main_menu' }]);
   await setState(env, userId, { step: 'product_category', data: { storeId, type: type || 'market' } });
@@ -1311,7 +1311,7 @@ async function showCitySelection(chatId) {
   for (let i = 0; i < CITIES.length; i += 3) {
     const row = CITIES.slice(i, i + 3).map(city => ({
       text: city,
-      callback_data: `city_select_${encodeURIComponent(city)}`
+      callback_data: `city_select_${city}`
     }));
     buttons.push(row);
   }
@@ -1403,11 +1403,11 @@ async function showServicesMenu(chatId, msgId, env) {
 
   // الثمانية الأساسية صفين متوازيين
   const buttons = SERVICE_CATS.map(pair =>
-    pair.map(cat => ({ text: cat, callback_data: `service_cat_${encodeURIComponent(cat)}` }))
+    pair.map(cat => ({ text: cat, callback_data: `service_cat_${cat}` }))
   );
   // أي تصانيف مخصصة مضافة
   for (const cat of customServiceCats) {
-    buttons.push([{ text: cat, callback_data: `service_cat_${encodeURIComponent(cat)}` }]);
+    buttons.push([{ text: cat, callback_data: `service_cat_${cat}` }]);
   }
   buttons.push([{ text: '↩️ رجوع', callback_data: 'main_menu' }]);
 
@@ -1430,7 +1430,7 @@ async function showServicesByCategory(chatId, msgId, cat, env, page) {
       {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '➕ أضف خدمتك', callback_data: `service_add_${encodeURIComponent(cat)}` }],
+            [{ text: '➕ أضف خدمتك', callback_data: `service_add_${cat}` }],
             [{ text: '↩️ رجوع', callback_data: 'menu_services' }]
           ]
         }
@@ -1441,12 +1441,12 @@ async function showServicesByCategory(chatId, msgId, cat, env, page) {
   const start = page * pageSize;
   const pageServices = services.slice(start, start + pageSize);
   const buttons = [
-    [{ text: '➕ أضف خدمتك', callback_data: `service_add_${encodeURIComponent(cat)}` }],
+    [{ text: '➕ أضف خدمتك', callback_data: `service_add_${cat}` }],
     ...pageServices.map(s => [{ text: `${s.name} — ${s.price}₪`, callback_data: `product_view_${s.id}` }])
   ];
   const nav = [];
-  if (page > 0) nav.push({ text: '⬅️ السابق', callback_data: `service_cat_page_${encodeURIComponent(cat)}|${page - 1}` });
-  if (start + pageSize < services.length) nav.push({ text: 'التالي ➡️', callback_data: `service_cat_page_${encodeURIComponent(cat)}|${page + 1}` });
+  if (page > 0) nav.push({ text: '⬅️ السابق', callback_data: `service_cat_page_${cat}|${page - 1}` });
+  if (start + pageSize < services.length) nav.push({ text: 'التالي ➡️', callback_data: `service_cat_page_${cat}|${page + 1}` });
   if (nav.length > 0) buttons.push(nav);
   buttons.push([{ text: '↩️ رجوع', callback_data: 'menu_services' }]);
   return editMessage(chatId, msgId, `${cat} (${services.length} خدمة) — ص ${page + 1}:`, { reply_markup: { inline_keyboard: buttons } });
@@ -1863,7 +1863,7 @@ async function showAdminCategoryDetail(chatId, msgId, cat, env) {
     if (p && p.category === cat) catProds.push(p);
   }
   const buttons = catProds.slice(0, 20).map(p => [{ text: `🛍️ ${p.name}`, callback_data: `product_view_${p.id}` }]);
-  buttons.push([{ text: '🗑️ حذف هذا التصنيف', callback_data: `admin_cat_delete_${encodeURIComponent(cat)}` }]);
+  buttons.push([{ text: '🗑️ حذف هذا التصنيف', callback_data: `admin_cat_delete_${cat}` }]);
   buttons.push([{ text: '🔙 رجوع', callback_data: 'menu_all_cats' }]);
   return editMessage(chatId, msgId,
     `🗂️ <b>التصنيف: ${cat}</b>\n\nعدد المنتجات: ${catProds.length}`,
@@ -1877,8 +1877,8 @@ async function showAdminCatDeleteConfirm(chatId, msgId, cat, env) {
     {
       reply_markup: {
         inline_keyboard: [
-          [{ text: '🔄 نقل إلى تصنيف آخر', callback_data: `admin_cat_move_select_${encodeURIComponent(cat)}` }],
-          [{ text: '❌ لا', callback_data: `admin_cat_view_${encodeURIComponent(cat)}` }]
+          [{ text: '🔄 نقل إلى تصنيف آخر', callback_data: `admin_cat_move_select_${cat}` }],
+          [{ text: '❌ لا', callback_data: `admin_cat_view_${cat}` }]
         ]
       }
     }
@@ -1889,9 +1889,9 @@ async function showCatMoveTargets(chatId, msgId, fromCat, env) {
   const cats = await getMarketCategories(env);
   const buttons = cats.filter(c => c !== fromCat).map(cat => [{
     text: cat,
-    callback_data: `admin_cat_move_to_${encodeURIComponent(fromCat)}|${encodeURIComponent(cat)}`
+    callback_data: `admin_cat_move_to_${fromCat}|${cat}`
   }]);
-  buttons.push([{ text: '🔙 رجوع', callback_data: `admin_cat_view_${encodeURIComponent(fromCat)}` }]);
+  buttons.push([{ text: '🔙 رجوع', callback_data: `admin_cat_view_${fromCat}` }]);
   return editMessage(chatId, msgId, `🔄 اختر التصنيف الهدف:`, { reply_markup: { inline_keyboard: buttons } });
 }
 
